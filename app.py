@@ -148,6 +148,45 @@ def _download_db_from_github() -> bool:
         return False
 
 
+def _run_db_download_ui() -> None:
+    """画面上でDBダウンロードを実行し、エラーも表示する"""
+    repo = _gh_secret("GITHUB_REPO")
+    token = _gh_secret("GITHUB_TOKEN")
+    if not repo:
+        st.error("GITHUB_REPO が設定されていません。Streamlit Secrets を確認してください。")
+        return
+    try:
+        owner, repo_name = repo.split("/", 1)
+        url = f"https://raw.githubusercontent.com/{owner}/{repo_name}/data/screening.db"
+        headers = {"Authorization": f"token {token}"} if token else {}
+
+        with st.status("DBダウンロード中...", expanded=True) as dl_status:
+            st.write(f"URL: `{url}`")
+            resp = requests.get(url, headers=headers, timeout=300)
+            st.write(f"HTTP応答: **{resp.status_code}**")
+
+            if resp.status_code != 200:
+                dl_status.update(label=f"❌ ダウンロード失敗 (HTTP {resp.status_code})", state="error")
+                st.error(resp.text[:500])
+                return
+
+            size_mb = len(resp.content) / 1024 / 1024
+            st.write(f"受信サイズ: {size_mb:.1f} MB")
+
+            DB_PATH.parent.mkdir(parents=True, exist_ok=True)
+            DB_PATH.write_bytes(resp.content)
+            st.write(f"保存先: `{DB_PATH}`  ({DB_PATH.stat().st_size:,} bytes)")
+            dl_status.update(label="✅ ダウンロード完了！", state="complete")
+
+        st.cache_resource.clear()
+        st.rerun()
+
+    except Exception as e:
+        import traceback
+        st.error(f"エラー: {e}")
+        st.code(traceback.format_exc())
+
+
 def _push_db_to_github() -> bool | None:
     """手動実行後に更新済み DB を GitHub へ保存する。設定なしなら None を返す。"""
     token = _gh_secret("GITHUB_TOKEN")
@@ -169,10 +208,8 @@ def _push_db_to_github() -> bool | None:
 
 @st.cache_resource
 def get_conn():
+    """DB接続を返す。DBがなければNoneを返す（ダウンロードは main() で行う）"""
     if not DB_PATH.exists():
-        _download_db_from_github()
-    if not DB_PATH.exists():
-        log.error(f"DB not found at {DB_PATH} after download attempt")
         return None
     try:
         return sqlite3.connect(str(DB_PATH), check_same_thread=False)
@@ -986,25 +1023,16 @@ def main():
     conn = get_conn()
 
     if conn is None:
-        st.error("⚠️ screening.db が読み込めません")
+        st.title("📈 スイングセンサー")
+        st.error("⚠️ データベースが見つかりません。以下のボタンでダウンロードしてください。")
 
-        if st.button("🔄 再接続を試みる", type="primary"):
-            st.cache_resource.clear()
-            st.rerun()
+        if st.button("📥 GitHubからDBをダウンロード", type="primary"):
+            _run_db_download_ui()
+            return
 
-        with st.expander("🔍 診断情報（原因確認）", expanded=True):
+        with st.expander("🔍 診断情報", expanded=False):
             for line in _diagnose():
                 st.markdown(line)
-
-        st.info(
-            "**対処法:**\n"
-            "- まず上の「再接続を試みる」ボタンを押してください\n"
-            "- Streamlit Secrets に `GITHUB_TOKEN` と `GITHUB_REPO` が正しく設定されているか確認\n"
-            "- `GITHUB_REPO` の形式: `ユーザー名/swing-sensor`\n"
-            "- `data` ブランチに `screening.db` がアップロードされているか確認\n"
-            "- HTTP応答が 404 → data ブランチのDBが存在しない\n"
-            "- HTTP応答が 401/403 → トークンが無効または期限切れ"
-        )
         return
 
     # スケジューラ初期化（初回のみ）
