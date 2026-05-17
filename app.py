@@ -21,7 +21,8 @@ import requests
 import streamlit as st
 
 BASE_DIR    = Path(__file__).parent
-DB_PATH     = BASE_DIR / "screening.db"
+# クラウド環境では SCREENING_DB_PATH 環境変数で /tmp を指定する
+DB_PATH     = Path(os.environ.get("SCREENING_DB_PATH", str(BASE_DIR / "screening.db")))
 CONFIG_PATH = BASE_DIR / "config.json"
 
 log = logging.getLogger(__name__)

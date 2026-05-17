@@ -9,13 +9,14 @@ daily_update.py 実行後に続けて実行する。
 
 import json
 import logging
+import os
 import sqlite3
 from datetime import datetime, timedelta
 from pathlib import Path
 
 import pandas as pd
 
-DB_PATH     = Path(__file__).parent / "screening.db"
+DB_PATH     = Path(os.environ.get("SCREENING_DB_PATH", str(Path(__file__).parent / "screening.db")))
 CONFIG_PATH = Path(__file__).parent / "config.json"
 
 logging.basicConfig(

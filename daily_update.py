@@ -7,6 +7,7 @@
 """
 
 import logging
+import os
 import sqlite3
 import time
 from datetime import datetime, timedelta
@@ -18,7 +19,7 @@ import yfinance as yf
 
 from indicators import INDICATOR_COLS, calc_indicators
 
-DB_PATH    = Path(__file__).parent / "screening.db"
+DB_PATH    = Path(os.environ.get("SCREENING_DB_PATH", str(Path(__file__).parent / "screening.db")))
 BATCH_SIZE = 100
 SLEEP_SEC  = 1.5
 LOOKBACK_DAYS = 110  # 指標計算用にDBから取得する過去日数（MA75確保のため）
