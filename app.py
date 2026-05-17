@@ -21,9 +21,22 @@ import requests
 import streamlit as st
 
 BASE_DIR    = Path(__file__).parent
-# クラウド環境では SCREENING_DB_PATH 環境変数で /tmp を指定する
-DB_PATH     = Path(os.environ.get("SCREENING_DB_PATH", str(BASE_DIR / "screening.db")))
 CONFIG_PATH = BASE_DIR / "config.json"
+
+
+def _resolve_db_path() -> Path:
+    """書き込み可能なDBパスを返す。クラウド環境では /tmp を使用する。"""
+    default = BASE_DIR / "screening.db"
+    try:
+        test = default.parent / ".wtest"
+        test.touch()
+        test.unlink()
+        return default          # ローカル: そのまま使用
+    except OSError:
+        return Path("/tmp/screening.db")  # Streamlit Cloud など読み取り専用環境
+
+
+DB_PATH = _resolve_db_path()
 
 log = logging.getLogger(__name__)
 

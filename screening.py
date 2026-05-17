@@ -16,7 +16,18 @@ from pathlib import Path
 
 import pandas as pd
 
-DB_PATH     = Path(os.environ.get("SCREENING_DB_PATH", str(Path(__file__).parent / "screening.db")))
+def _resolve_db_path() -> Path:
+    default = Path(__file__).parent / "screening.db"
+    try:
+        test = default.parent / ".wtest"
+        test.touch()
+        test.unlink()
+        return default
+    except OSError:
+        return Path("/tmp/screening.db")
+
+
+DB_PATH     = Path(os.environ["SCREENING_DB_PATH"]) if os.environ.get("SCREENING_DB_PATH") else _resolve_db_path()
 CONFIG_PATH = Path(__file__).parent / "config.json"
 
 logging.basicConfig(

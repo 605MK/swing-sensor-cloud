@@ -19,7 +19,19 @@ import yfinance as yf
 
 from indicators import INDICATOR_COLS, calc_indicators
 
-DB_PATH    = Path(os.environ.get("SCREENING_DB_PATH", str(Path(__file__).parent / "screening.db")))
+
+def _resolve_db_path() -> Path:
+    default = Path(__file__).parent / "screening.db"
+    try:
+        test = default.parent / ".wtest"
+        test.touch()
+        test.unlink()
+        return default
+    except OSError:
+        return Path("/tmp/screening.db")
+
+
+DB_PATH    = Path(os.environ["SCREENING_DB_PATH"]) if os.environ.get("SCREENING_DB_PATH") else _resolve_db_path()
 BATCH_SIZE = 100
 SLEEP_SEC  = 1.5
 LOOKBACK_DAYS = 110  # 指標計算用にDBから取得する過去日数（MA75確保のため）
