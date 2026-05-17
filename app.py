@@ -170,11 +170,15 @@ def _push_db_to_github() -> bool | None:
 @st.cache_resource
 def get_conn():
     if not DB_PATH.exists():
-        # クラウド環境: GitHub data ブランチから DB を取得
         _download_db_from_github()
     if not DB_PATH.exists():
+        log.error(f"DB not found at {DB_PATH} after download attempt")
         return None
-    return sqlite3.connect(str(DB_PATH), check_same_thread=False)
+    try:
+        return sqlite3.connect(str(DB_PATH), check_same_thread=False)
+    except Exception as e:
+        log.error(f"sqlite3.connect failed: {e}")
+        return None
 
 
 def _diagnose() -> list[str]:
@@ -983,16 +987,23 @@ def main():
 
     if conn is None:
         st.error("⚠️ screening.db が読み込めません")
+
+        if st.button("🔄 再接続を試みる", type="primary"):
+            st.cache_resource.clear()
+            st.rerun()
+
         with st.expander("🔍 診断情報（原因確認）", expanded=True):
             for line in _diagnose():
                 st.markdown(line)
+
         st.info(
             "**対処法:**\n"
+            "- まず上の「再接続を試みる」ボタンを押してください\n"
             "- Streamlit Secrets に `GITHUB_TOKEN` と `GITHUB_REPO` が正しく設定されているか確認\n"
             "- `GITHUB_REPO` の形式: `ユーザー名/swing-sensor`\n"
             "- `data` ブランチに `screening.db` がアップロードされているか確認\n"
-            "- HTTP応答が 404 の場合 → data ブランチのDBが存在しない\n"
-            "- HTTP応答が 401/403 の場合 → トークンが無効または期限切れ"
+            "- HTTP応答が 404 → data ブランチのDBが存在しない\n"
+            "- HTTP応答が 401/403 → トークンが無効または期限切れ"
         )
         return
 
