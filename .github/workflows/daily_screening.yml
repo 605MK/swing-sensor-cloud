@@ -1,0 +1,91 @@
+name: 毎日スクリーニング
+
+on:
+  schedule:
+    # 毎週月〜金 JST 16:00（UTC 07:00）
+    # ※祝日は自動スキップしない（yfinance がデータなしで返るだけで問題なし）
+    - cron: '0 7 * * 1-5'
+
+  # Streamlit アプリの「手動実行」ボタンから起動
+  repository_dispatch:
+    types: [manual-screening]
+
+  # GitHub の画面から手動起動したい場合
+  workflow_dispatch:
+
+permissions:
+  contents: write   # main ブランチへのプッシュに必要
+
+jobs:
+  screening:
+    runs-on: ubuntu-latest
+    timeout-minutes: 90   # yfinance の全銘柄取得に最大 60 分想定
+
+    steps:
+      # ── 1. コードを取得 ────────────────────────────────────────────────────
+      - name: リポジトリをチェックアウト
+        uses: actions/checkout@v4
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      # ── 2. Python 環境 ─────────────────────────────────────────────────────
+      - name: Python 3.11 をセットアップ
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: 'pip'
+
+      - name: 依存パッケージをインストール
+        run: pip install -r requirements.txt
+
+      # ── 3. 前回保存した DB を取得 ──────────────────────────────────────────
+      - name: data ブランチから DB をダウンロード
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GITHUB_REPO: ${{ github.repository }}
+        run: |
+          python push_db.py --pull || echo "DB が未作成のため新規構築します"
+
+      # ── 4. 初回（DB が無い場合）: init_db.py を実行 ───────────────────────
+      - name: 初回 DB 構築（screening.db が無い場合のみ）
+        if: ${{ hashFiles('screening.db') == '' }}
+        run: |
+          echo "screening.db が見つかりません。init_db.py を実行します（初回のみ・約 30〜60 分）"
+          python init_db.py
+
+      # ── 5. 株価データ更新 ─────────────────────────────────────────────────
+      - name: 株価データ・指標を更新（daily_update.py）
+        run: python daily_update.py
+
+      # ── 6. スクリーニング ──────────────────────────────────────────────────
+      - name: スクリーニング実行（screening.py）
+        run: python screening.py
+
+      # ── 7. 通知 ───────────────────────────────────────────────────────────
+      - name: LINE / メール通知を送信
+        env:
+          NOTIFY_LINE_TOKEN:     ${{ secrets.NOTIFY_LINE_TOKEN }}
+          NOTIFY_EMAIL_ENABLED:  ${{ secrets.NOTIFY_EMAIL_ENABLED }}
+          NOTIFY_EMAIL_SMTP:     ${{ secrets.NOTIFY_EMAIL_SMTP }}
+          NOTIFY_EMAIL_PORT:     ${{ secrets.NOTIFY_EMAIL_PORT }}
+          NOTIFY_EMAIL_USER:     ${{ secrets.NOTIFY_EMAIL_USER }}
+          NOTIFY_EMAIL_PASSWORD: ${{ secrets.NOTIFY_EMAIL_PASSWORD }}
+          NOTIFY_EMAIL_TO:       ${{ secrets.NOTIFY_EMAIL_TO }}
+        run: python notify_cli.py
+
+      # ── 8. 更新 DB を data ブランチへ保存 ────────────────────────────────
+      - name: DB を GitHub data ブランチへ保存
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GITHUB_REPO: ${{ github.repository }}
+        run: python push_db.py --push
+
+      # ── 9. Streamlit 再デプロイ用タイムスタンプを main へ push ───────────
+      - name: タイムスタンプを更新して Streamlit を再デプロイ
+        run: |
+          git config user.email "actions@github.com"
+          git config user.name  "GitHub Actions"
+          TZ='Asia/Tokyo' date '+%Y-%m-%d %H:%M JST' > .last_screening
+          git add .last_screening
+          git diff --staged --quiet && echo "変更なし" || \
+            git commit -m "screening: $(cat .last_screening)" && git push origin main

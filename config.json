@@ -1,0 +1,40 @@
+{
+  "thresholds": {
+    "trend_day0": {
+      "body_pct_min": 4.0,
+      "body_pct_max": 8.0,
+      "upper_shadow_max": 2.0,
+      "lower_shadow_min": 0.5,
+      "volume_ratio_min": 1.5,
+      "volume_ratio_max": 4.0,
+      "kairi25_min": 2.0,
+      "kairi25_max": 7.0,
+      "rsi14_min": 52.0,
+      "rsi14_max": 70.0
+    },
+    "trend_day1": {
+      "volume_ratio_min": 1.2,
+      "upper_shadow_max": 3.0
+    },
+    "contra_day0": {
+      "kairi25_max": -10.0,
+      "rsi14_max": 40.0,
+      "lower_shadow_min": 1.0,
+      "volume_ratio_min": 1.2
+    }
+  },
+  "notifications": {
+    "email_enabled": false,
+    "email_smtp": "smtp.gmail.com",
+    "email_port": 587,
+    "email_user": "",
+    "email_password": "",
+    "email_to": "",
+    "line_enabled": false,
+    "line_token": ""
+  },
+  "schedule": {
+    "enabled": false,
+    "time": "16:00"
+  }
+}

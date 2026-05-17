@@ -1,0 +1,16 @@
+# DB は GitHub の data ブランチで管理するため main ブランチには含めない
+screening.db
+
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+.env
+
+# Streamlit の実際の secrets（テンプレートは .example として管理）
+.streamlit/secrets.toml
+
+# その他
+.DS_Store
+Thumbs.db
+*.log

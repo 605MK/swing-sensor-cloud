@@ -1,0 +1,19 @@
+{
+  "permissions": {
+    "allow": [
+      "Skill(anthropic-skills:docx)",
+      "Skill(anthropic-skills:docx:*)",
+      "Read(//c/Users/M/AppData/Roaming/Claude/local-agent-mode-sessions/skills-plugin/9436fac2-cbd9-4bc6-8975-597f0aeb2f03/91cae766-8dd3-414f-ac94-6f4e8bb902c9/skills/docx/**)",
+      "Bash(python scripts/office/unpack.py \"C:\\\\Users\\\\M\\\\Desktop\\\\スイングセンサーcloud\\\\screening_handover.docx\" \"C:\\\\Users\\\\M\\\\Desktop\\\\スイングセンサーcloud\\\\unpacked_screening\")",
+      "Bash(pip install *)",
+      "Bash(python -c \"import indicators; print\\('indicators OK'\\)\")",
+      "Bash(python -m py_compile init_db.py)",
+      "Bash(python -m py_compile daily_update.py)",
+      "Bash(python -m py_compile screening.py)",
+      "Bash(python -m py_compile app.py)",
+      "Bash(python -m py_compile push_db.py)",
+      "Bash(python -m py_compile notify_cli.py)",
+      "Bash(python -m py_compile prune_db.py)"
+    ]
+  }
+}
