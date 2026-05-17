@@ -25,15 +25,18 @@ CONFIG_PATH = BASE_DIR / "config.json"
 
 
 def _resolve_db_path() -> Path:
-    """書き込み可能なDBパスを返す。クラウド環境では /tmp を使用する。"""
+    """書き込み可能なDBパスを返す。Streamlit Cloud では /tmp を使用する。"""
+    # Streamlit Cloud は /mount/src/ にコードをマウントする（大ファイル書き込み不可）
+    if str(BASE_DIR).startswith("/mount/src"):
+        return Path("/tmp/screening.db")
     default = BASE_DIR / "screening.db"
     try:
         test = default.parent / ".wtest"
         test.touch()
         test.unlink()
-        return default          # ローカル: そのまま使用
+        return default
     except OSError:
-        return Path("/tmp/screening.db")  # Streamlit Cloud など読み取り専用環境
+        return Path("/tmp/screening.db")
 
 
 DB_PATH = _resolve_db_path()

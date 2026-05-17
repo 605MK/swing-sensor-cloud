@@ -21,7 +21,10 @@ from indicators import INDICATOR_COLS, calc_indicators
 
 
 def _resolve_db_path() -> Path:
-    default = Path(__file__).parent / "screening.db"
+    base = Path(__file__).parent
+    if str(base).startswith("/mount/src"):
+        return Path("/tmp/screening.db")
+    default = base / "screening.db"
     try:
         test = default.parent / ".wtest"
         test.touch()
