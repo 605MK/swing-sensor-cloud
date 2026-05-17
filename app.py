@@ -174,6 +174,28 @@ def get_conn():
     return sqlite3.connect(str(DB_PATH), check_same_thread=False)
 
 
+def _diagnose() -> list[str]:
+    """起動時の状態診断情報を返す（エラー時のデバッグ用）"""
+    info = []
+    info.append(f"**DBパス:** `{DB_PATH}`")
+    info.append(f"**DBファイル存在:** {DB_PATH.exists()}")
+    repo = _gh_secret("GITHUB_REPO")
+    token = _gh_secret("GITHUB_TOKEN")
+    info.append(f"**GITHUB_REPO 設定済み:** {bool(repo)} ({repo or '未設定'})")
+    info.append(f"**GITHUB_TOKEN 設定済み:** {bool(token)}")
+    if repo:
+        try:
+            owner, repo_name = repo.split("/", 1)
+            url = f"https://raw.githubusercontent.com/{owner}/{repo_name}/data/screening.db"
+            info.append(f"**ダウンロードURL:** `{url}`")
+            hdrs = {"Authorization": f"token {token}"} if token else {}
+            resp = requests.head(url, headers=hdrs, timeout=15)
+            info.append(f"**HTTP応答:** {resp.status_code}")
+        except Exception as e:
+            info.append(f"**接続確認エラー:** {e}")
+    return info
+
+
 # ── ヘルパー ──────────────────────────────────────────────────────────────────
 
 def strategy_label(s: str) -> str:
@@ -957,15 +979,17 @@ def main():
     conn = get_conn()
 
     if conn is None:
-        st.error(
-            "screening.db が見つかりません。\n\n"
-            "以下の手順でセットアップしてください:\n"
-            "```\n"
-            "pip install -r requirements.txt\n"
-            "python init_db.py    # 初回のみ（30〜60分）\n"
-            "python daily_update.py\n"
-            "python screening.py\n"
-            "```"
+        st.error("⚠️ screening.db が読み込めません")
+        with st.expander("🔍 診断情報（原因確認）", expanded=True):
+            for line in _diagnose():
+                st.markdown(line)
+        st.info(
+            "**対処法:**\n"
+            "- Streamlit Secrets に `GITHUB_TOKEN` と `GITHUB_REPO` が正しく設定されているか確認\n"
+            "- `GITHUB_REPO` の形式: `ユーザー名/swing-sensor`\n"
+            "- `data` ブランチに `screening.db` がアップロードされているか確認\n"
+            "- HTTP応答が 404 の場合 → data ブランチのDBが存在しない\n"
+            "- HTTP応答が 401/403 の場合 → トークンが無効または期限切れ"
         )
         return
 
