@@ -207,7 +207,7 @@ def main() -> None:
     log.info(f"対象銘柄数: {len(tickers)}")
 
     # 直近5営業日 + バッファ
-    end   = datetime.now().strftime("%Y-%m-%d")
+    end   = (datetime.now() + timedelta(days=1)).strftime("%Y-%m-%d")
     start = (datetime.now() - timedelta(days=10)).strftime("%Y-%m-%d")
     log.info(f"取得期間: {start} 〜 {end}")
 

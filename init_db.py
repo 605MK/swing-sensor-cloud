@@ -348,7 +348,7 @@ def main() -> None:
     conn.commit()
     log.info(f"watchlist: {len(tickers_df)} 件登録")
 
-    end   = datetime.now().strftime("%Y-%m-%d")
+    end   = (datetime.now() + timedelta(days=1)).strftime("%Y-%m-%d")
     start = (datetime.now() - timedelta(days=730)).strftime("%Y-%m-%d")
     log.info(f"取得期間: {start} 〜 {end}")
 
