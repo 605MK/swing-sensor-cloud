@@ -194,7 +194,7 @@ def _push_db_to_github() -> tuple[bool | None, str]:
     repo  = _gh_secret("GITHUB_REPO")
     if not token or not repo:
         return None, ""
-    env = os.environ.copy()
+    env = _subprocess_env()
     env["GITHUB_TOKEN"] = token
     env["GITHUB_REPO"]  = repo
     try:
@@ -313,19 +313,27 @@ def _get_scheduler():
         return None
 
 
+def _subprocess_env() -> dict:
+    """サブプロセス用の環境変数（DBパスを統一して渡す）"""
+    env = os.environ.copy()
+    env["SCREENING_DB_PATH"] = str(DB_PATH)
+    return env
+
+
 def _run_pipeline_job():
     """APScheduler から呼ばれる定期実行ジョブ"""
     log.info("自動スクリーニング開始")
+    _env = _subprocess_env()
     r1 = subprocess.run(
         [sys.executable, str(BASE_DIR / "daily_update.py")],
-        capture_output=True, text=True, cwd=str(BASE_DIR),
+        capture_output=True, text=True, cwd=str(BASE_DIR), env=_env,
     )
     if r1.returncode != 0:
         log.error(f"DB更新失敗:\n{r1.stderr}")
         return
     r2 = subprocess.run(
         [sys.executable, str(BASE_DIR / "screening.py")],
-        capture_output=True, text=True, cwd=str(BASE_DIR),
+        capture_output=True, text=True, cwd=str(BASE_DIR), env=_env,
     )
     if r2.returncode != 0:
         log.error(f"スクリーニング失敗:\n{r2.stderr}")
@@ -390,10 +398,12 @@ def run_pipeline_manual(placeholder):
         with st.status("パイプライン実行中...", expanded=True) as status:
             prog = st.progress(0, text="⏳ DB更新を開始しています...")
 
+            _env = _subprocess_env()
+
             st.write("**STEP 1/2** — 株価データ・指標を更新中 (daily_update.py)")
             r1 = subprocess.run(
                 [sys.executable, str(BASE_DIR / "daily_update.py")],
-                capture_output=True, text=True, cwd=str(BASE_DIR),
+                capture_output=True, text=True, cwd=str(BASE_DIR), env=_env,
             )
             prog.progress(50, text="⏳ スクリーニング実行中...")
 
@@ -410,7 +420,7 @@ def run_pipeline_manual(placeholder):
             st.write("**STEP 2/2** — スクリーニング条件を判定中 (screening.py)")
             r2 = subprocess.run(
                 [sys.executable, str(BASE_DIR / "screening.py")],
-                capture_output=True, text=True, cwd=str(BASE_DIR),
+                capture_output=True, text=True, cwd=str(BASE_DIR), env=_env,
             )
             prog.progress(80, text="⏳ 通知を送信中...")
 

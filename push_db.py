@@ -21,7 +21,11 @@ from pathlib import Path
 import requests
 
 BASE_DIR    = Path(__file__).parent
-DB_PATH     = BASE_DIR / "screening.db"
+_env_db     = os.environ.get("SCREENING_DB_PATH", "")
+DB_PATH     = Path(_env_db) if _env_db else (
+    Path("/tmp/screening.db") if str(BASE_DIR).startswith("/mount/src")
+    else BASE_DIR / "screening.db"
+)
 DB_BRANCH   = "data"
 DB_FILENAME = "screening.db"
 TIMESTAMP_FILE = ".last_screening"
