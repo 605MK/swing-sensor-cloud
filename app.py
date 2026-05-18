@@ -711,6 +711,13 @@ def render_watch_tab(conn):
         LEFT JOIN indicators i ON i.ticker = s.ticker AND i.date = s.date
         LEFT JOIN prices_raw p ON p.ticker = s.ticker AND p.date = s.date
         WHERE s.date=? AND s.signal_type='watch'
+          AND NOT EXISTS (
+              SELECT 1 FROM signals s2
+              WHERE s2.ticker = s.ticker
+                AND s2.strategy = s.strategy
+                AND s2.signal_type = 'buy'
+                AND s2.date > s.date
+          )
         ORDER BY s.strategy, s.ticker
         """,
         (target_date,),
