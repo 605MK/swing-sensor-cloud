@@ -187,21 +187,32 @@ def _run_db_download_ui() -> None:
         st.code(traceback.format_exc())
 
 
-def _push_db_to_github() -> bool | None:
-    """手動実行後に更新済み DB を GitHub へ保存する。設定なしなら None を返す。"""
+def _push_db_to_github() -> tuple[bool | None, str]:
+    """手動実行後に更新済み DB を GitHub へ保存する。
+    戻り値: (成否, ログ文字列)  成否=None はGitHub設定なし"""
     token = _gh_secret("GITHUB_TOKEN")
     repo  = _gh_secret("GITHUB_REPO")
     if not token or not repo:
-        return None
+        return None, ""
+    env = os.environ.copy()
+    env["GITHUB_TOKEN"] = token
+    env["GITHUB_REPO"]  = repo
     try:
-        from push_db import push_db, push_timestamp
-        ok = push_db(token, repo)
-        if ok:
-            push_timestamp(token, repo)
-        return ok
+        r = subprocess.run(
+            [sys.executable, str(BASE_DIR / "push_db.py"), "--push"],
+            capture_output=True, text=True, cwd=str(BASE_DIR),
+            timeout=600, env=env,
+        )
+        output = (r.stdout + r.stderr).strip()
+        if r.returncode == 0:
+            subprocess.run(
+                [sys.executable, str(BASE_DIR / "push_db.py"), "--timestamp"],
+                capture_output=True, text=True, cwd=str(BASE_DIR),
+                timeout=30, env=env,
+            )
+        return (r.returncode == 0), output
     except Exception as e:
-        log.error(f"GitHub 保存エラー: {e}")
-        return False
+        return False, str(e)
 
 
 # ── DB 接続 ───────────────────────────────────────────────────────────────────
@@ -447,12 +458,15 @@ def run_pipeline_manual(placeholder):
 
             # GitHub へ DB を保存（クラウド環境）
             prog.progress(90, text="⏳ GitHub へ DB を保存中...")
-            push_result = _push_db_to_github()
+            push_result, push_log = _push_db_to_github()
 
             if push_result is True:
                 st.success("✅ GitHub への保存が完了しました。約1〜2分後にページが自動更新されます。")
             elif push_result is False:
                 st.warning("⚠️ GitHub への保存に失敗しました。結果は現在のセッションのみ有効です。")
+                if push_log:
+                    with st.expander("エラー詳細"):
+                        st.code(push_log)
             # push_result が None = ローカル実行（GitHub 設定なし）→ 何も表示しない
 
             prog.progress(100, text="✅ 完了！")
