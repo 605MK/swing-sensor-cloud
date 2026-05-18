@@ -689,18 +689,14 @@ def render_buy_tab(conn):
 def render_watch_tab(conn):
     st.subheader("👁 監視中（Day0 通過 → 翌日 Day1 確認待ち）")
 
-    dates = conn.execute(
-        "SELECT DISTINCT date FROM signals WHERE signal_type='watch' ORDER BY date DESC LIMIT 2"
-    ).fetchall()
-    if not dates:
-        st.info("監視中のシグナルがありません。")
-        return
+    today_str = datetime.now().strftime("%Y-%m-%d")
 
-    target_date = dates[0][0]
     col_f1, _ = st.columns([1, 3])
     with col_f1:
         strategy_filter = st.selectbox("戦略", ["全て", "順張り", "逆張り"], key="watch_strategy")
 
+    # entry_date > today のもののみ表示（Day1チェック済み・期限切れを除外）
+    # さらに buy 昇格済みも除外
     rows = conn.execute(
         """
         SELECT s.ticker, w.name, s.strategy, s.date,
@@ -710,7 +706,8 @@ def render_watch_tab(conn):
         LEFT JOIN watchlist w ON w.ticker = s.ticker
         LEFT JOIN indicators i ON i.ticker = s.ticker AND i.date = s.date
         LEFT JOIN prices_raw p ON p.ticker = s.ticker AND p.date = s.date
-        WHERE s.date=? AND s.signal_type='watch'
+        WHERE s.signal_type='watch'
+          AND s.entry_date > ?
           AND NOT EXISTS (
               SELECT 1 FROM signals s2
               WHERE s2.ticker = s.ticker
@@ -718,13 +715,13 @@ def render_watch_tab(conn):
                 AND s2.signal_type = 'buy'
                 AND s2.date > s.date
           )
-        ORDER BY s.strategy, s.ticker
+        ORDER BY s.date DESC, s.strategy, s.ticker
         """,
-        (target_date,),
+        (today_str,),
     ).fetchall()
 
     if not rows:
-        st.info(f"{target_date} の監視シグナルはありません。")
+        st.info("現在 Day1 確認待ちの銘柄はありません。")
         return
 
     records = []
@@ -748,8 +745,7 @@ def render_watch_tab(conn):
     df = pd.DataFrame(records)
     df = _show_signal_df(df, strategy_filter, "watch")
     st.caption(
-        f"シグナル日: {target_date}  |  件数: {len(df)}  |  "
-        "翌日の値動きを確認後、Day1条件を満たせば買い推奨に昇格します"
+        f"件数: {len(df)}  |  翌営業日の値動きを確認後、Day1条件を満たせば買い推奨に昇格します"
     )
 
 
