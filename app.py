@@ -470,17 +470,19 @@ def run_pipeline_manual(placeholder):
             prog.progress(90, text="⏳ GitHub へ DB を保存中...")
             push_result, push_log = _push_db_to_github()
 
+            # 結果をsession_stateに保存し、rerun後に表示する
             if push_result is True:
-                st.success("✅ GitHub への保存が完了しました。約1〜2分後にページが自動更新されます。")
+                st.session_state["_pipeline_msg"] = ("success", "✅ スクリーニング完了・GitHub へ保存しました。")
             elif push_result is False:
-                st.warning("⚠️ GitHub への保存に失敗しました。結果は現在のセッションのみ有効です。")
+                st.session_state["_pipeline_msg"] = ("warning", "⚠️ スクリーニング完了しましたが、GitHub への保存に失敗しました。")
                 if push_log:
-                    with st.expander("エラー詳細"):
-                        st.code(push_log)
-            # push_result が None = ローカル実行（GitHub 設定なし）→ 何も表示しない
+                    st.session_state["_pipeline_push_log"] = push_log
+            else:
+                st.session_state["_pipeline_msg"] = ("success", "✅ スクリーニングが完了しました。")
 
             prog.progress(100, text="✅ 完了！")
             status.update(label="✅ 実行完了！", state="complete")
+            st.session_state["_pipeline_done"] = True
 
 
 # ── Excel エクスポート ────────────────────────────────────────────────────────
@@ -1068,6 +1070,18 @@ def main():
         apply_schedule(cfg)
         st.session_state["scheduler_initialized"] = True
 
+    # パイプライン完了後の結果メッセージを表示
+    if "_pipeline_msg" in st.session_state:
+        msg_type, msg_text = st.session_state.pop("_pipeline_msg")
+        if msg_type == "success":
+            st.success(msg_text)
+        elif msg_type == "warning":
+            st.warning(msg_text)
+        if "_pipeline_push_log" in st.session_state:
+            push_log = st.session_state.pop("_pipeline_push_log")
+            with st.expander("GitHub保存エラー詳細"):
+                st.code(push_log)
+
     render_header(conn)
     st.divider()
 
@@ -1076,6 +1090,11 @@ def main():
     if st.session_state.get("run_pipeline"):
         st.session_state["run_pipeline"] = False
         run_pipeline_manual(run_placeholder)
+
+    # パイプライン完了後にキャッシュをクリアして再描画（最終更新日を更新するため）
+    if st.session_state.pop("_pipeline_done", False):
+        st.cache_resource.clear()
+        st.rerun()
 
     tab_buy, tab_watch, tab_history, tab_settings = st.tabs(
         ["📋 買い推奨", "👁 監視中", "📊 履歴 & 成績", "⚙️ 設定"]
