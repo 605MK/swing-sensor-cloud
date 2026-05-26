@@ -153,18 +153,32 @@ def check_contra_day1(r1: dict) -> bool:
 # ── メイン処理 ────────────────────────────────────────────────────────────────
 
 def get_dates_to_screen(conn: sqlite3.Connection) -> tuple[list[str], str | None]:
-    """未スクリーニング日リスト（昇順）と、Day1コンテキスト用の前回最終日を返す。"""
-    last_screened = conn.execute("SELECT MAX(date) FROM signals").fetchone()[0]
-    if last_screened:
-        rows = conn.execute(
-            "SELECT DISTINCT date FROM indicators WHERE date > ? ORDER BY date ASC",
-            (last_screened,),
-        ).fetchall()
-    else:
-        rows = conn.execute(
-            "SELECT DISTINCT date FROM indicators ORDER BY date ASC"
-        ).fetchall()
-    return [r[0] for r in rows], last_screened
+    """未スクリーニング日を含む処理対象日付リストを返す。
+    indicators に存在するが signals にない日があれば、その最古日から
+    最新 indicators 日まで全て処理（INSERT OR IGNORE で重複は安全に無視）。"""
+    # indicators にあるが signals にない最古の日付を探す
+    first_gap_row = conn.execute("""
+        SELECT MIN(i.date) FROM
+        (SELECT DISTINCT date FROM indicators) i
+        LEFT JOIN (SELECT DISTINCT date FROM signals) s ON s.date = i.date
+        WHERE s.date IS NULL
+    """).fetchone()
+    first_gap = first_gap_row[0] if first_gap_row and first_gap_row[0] else None
+
+    if not first_gap:
+        return [], conn.execute("SELECT MAX(date) FROM signals").fetchone()[0]
+
+    # first_gap より前の最新シグナル日（Day1 コンテキスト用）
+    last_before = conn.execute(
+        "SELECT MAX(date) FROM signals WHERE date < ?", (first_gap,)
+    ).fetchone()[0]
+
+    # first_gap 以降の全 indicators 日（処理済みも含む: Day1 再チェックのため）
+    rows = conn.execute(
+        "SELECT DISTINCT date FROM indicators WHERE date >= ? ORDER BY date ASC",
+        (first_gap,),
+    ).fetchall()
+    return [r[0] for r in rows], last_before
 
 
 def load_indicators_for_date(conn: sqlite3.Connection, date: str) -> dict[str, dict]:

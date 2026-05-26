@@ -5,6 +5,7 @@
     streamlit run app.py
 """
 
+import calendar as _cal
 import io
 import json
 import logging
@@ -296,6 +297,14 @@ def nth_trading_day_after(conn, ticker: str, from_date: str, n: int) -> str | No
     return rows[n - 1][0] if len(rows) >= n else None
 
 
+def _n225_close_at(conn, date: str) -> float | None:
+    """指定日の日経平均終値を indicators から取得する"""
+    row = conn.execute(
+        "SELECT n225_close FROM indicators WHERE date=? LIMIT 1", (date,)
+    ).fetchone()
+    return row[0] if row else None
+
+
 # ── スケジューラ ──────────────────────────────────────────────────────────────
 
 @st.cache_resource
@@ -529,7 +538,7 @@ def build_excel(conn, date_from: str, date_to: str) -> bytes:
 # ── パフォーマンス計算 ────────────────────────────────────────────────────────
 
 def calc_performance(conn, year: int, month: int, strategy_filter: str) -> pd.DataFrame:
-    """買いシグナルのリターンを計算して返す"""
+    """買いシグナルの 3/5/10 日後リターンと日経比較を計算して返す"""
     if month == 0:
         date_cond = f"strftime('%Y', s.date) = '{year}'"
     else:
@@ -545,8 +554,8 @@ def calc_performance(conn, year: int, month: int, strategy_filter: str) -> pd.Da
         f"""
         SELECT s.ticker, w.name, s.strategy, s.date, s.entry_date,
                s.entry_price,
-               p_e.open   AS entry_open,
-               p_e.close  AS entry_close
+               p_e.open  AS entry_open,
+               p_e.close AS entry_close
         FROM signals s
         LEFT JOIN watchlist w ON w.ticker = s.ticker
         LEFT JOIN prices_raw p_e ON p_e.ticker = s.ticker AND p_e.date = s.entry_date
@@ -555,45 +564,55 @@ def calc_performance(conn, year: int, month: int, strategy_filter: str) -> pd.Da
         """,
     ).fetchall()
 
-    cols = ["ticker","name","strategy","date","entry_date",
-            "entry_price","entry_open","entry_close"]
+    cols = ["ticker", "name", "strategy", "date", "entry_date",
+            "entry_price", "entry_open", "entry_close"]
     records = []
+
     for row in rows:
         d = dict(zip(cols, row))
         buy_price = d["entry_price"] or d["entry_open"] or d["entry_close"]
-        # buy_price が取れなくてもシグナル自体は履歴に表示する（価格未確定として扱う）
+        entry_d   = d["entry_date"] or d["date"]
+        n225_entry = _n225_close_at(conn, entry_d) if buy_price else None
 
-        exit_date = None
-        exit_price = None
-        ret = None
-        win = None
+        def _ret_at(n: int):
+            if not buy_price:
+                return None, None
+            dn = nth_trading_day_after(conn, d["ticker"], entry_d, n)
+            if not dn:
+                return None, None
+            pr = conn.execute(
+                "SELECT close FROM prices_raw WHERE ticker=? AND date=?",
+                (d["ticker"], dn),
+            ).fetchone()
+            price_n  = pr[0] if pr else None
+            ret_n    = (price_n - buy_price) / buy_price * 100 if price_n else None
+            n225_n   = _n225_close_at(conn, dn)
+            n225_ret = (n225_n - n225_entry) / n225_entry * 100 if (n225_entry and n225_n) else None
+            return ret_n, n225_ret
 
-        if buy_price:
-            holding = 5 if d["strategy"] == "trend" else 9
-            exit_date = nth_trading_day_after(conn, d["ticker"], d["entry_date"] or d["date"], holding)
-            if exit_date:
-                res = conn.execute(
-                    "SELECT close FROM prices_raw WHERE ticker=? AND date=?",
-                    (d["ticker"], exit_date),
-                ).fetchone()
-                exit_price = res[0] if res else None
-            if buy_price and exit_price:
-                ret = (exit_price - buy_price) / buy_price * 100
-                win = ret > 0
+        r3,  n3  = _ret_at(3)
+        r5,  n5  = _ret_at(5)
+        r10, n10 = _ret_at(10)
+        win = (r5 > 0) if r5 is not None else None
 
         records.append({
-            "シグナル日":     d["date"],
-            "ティッカー":     d["ticker"],
-            "kabutan_url":    ticker_to_kabutan_url(d["ticker"]),
-            "銘柄名":         d["name"] or "-",
-            "戦略":           strategy_label(d["strategy"]),
-            "エントリー日":   d["entry_date"] or "-",
+            "シグナル日":    d["date"],
+            "ティッカー":    d["ticker"],
+            "kabutan_url":   ticker_to_kabutan_url(d["ticker"]),
+            "銘柄名":        d["name"] or "-",
+            "戦略":          strategy_label(d["strategy"]),
+            "エントリー日":  entry_d or "-",
             "エントリー価格": fmt_price(buy_price) if buy_price else "未確定",
-            "出口日":         exit_date or "-",
-            "出口価格":       fmt_price(exit_price) if exit_price else "-",
-            "リターン%":      round(ret, 2) if ret is not None else None,
-            "_win":           win,
-            "_ret_raw":       ret,
+            "3日後%":        round(r3,  2) if r3  is not None else None,
+            "日経3日後%":    round(n3,  2) if n3  is not None else None,
+            "5日後%":        round(r5,  2) if r5  is not None else None,
+            "日経5日後%":    round(n5,  2) if n5  is not None else None,
+            "10日後%":       round(r10, 2) if r10 is not None else None,
+            "日経10日後%":   round(n10, 2) if n10 is not None else None,
+            "_win":          win,
+            "_ret3":         r3,
+            "_ret5":         r5,
+            "_ret10":        r10,
         })
 
     return pd.DataFrame(records)
@@ -776,130 +795,248 @@ def render_watch_tab(conn):
     )
 
 
+def _render_day_detail(conn, date_str: str) -> None:
+    """カレンダーで選択した日のシグナル詳細を表示する"""
+    st.markdown(f"#### 📋 {date_str} のシグナル詳細")
+
+    ret_col_cfg = {
+        "kabutan_url": st.column_config.LinkColumn("株探", display_text="↗"),
+        "3日後%":   st.column_config.NumberColumn("3日後%",  format="%.2f%%"),
+        "5日後%":   st.column_config.NumberColumn("5日後%",  format="%.2f%%"),
+        "10日後%":  st.column_config.NumberColumn("10日後%", format="%.2f%%"),
+        "日経3日後%":  st.column_config.NumberColumn("日経3日後%",  format="%.2f%%"),
+        "日経5日後%":  st.column_config.NumberColumn("日経5日後%",  format="%.2f%%"),
+        "日経10日後%": st.column_config.NumberColumn("日経10日後%", format="%.2f%%"),
+    }
+
+    for sig_type, section_label in [("buy", "買い推奨"), ("watch", "監視")]:
+        rows = conn.execute(
+            """
+            SELECT s.ticker, w.name, s.strategy, s.entry_date,
+                   p_e.open AS eo, p_e.close AS ec, s.entry_price
+            FROM signals s
+            LEFT JOIN watchlist w ON w.ticker = s.ticker
+            LEFT JOIN prices_raw p_e
+                   ON p_e.ticker = s.ticker AND p_e.date = s.entry_date
+            WHERE s.date=? AND s.signal_type=?
+            ORDER BY s.strategy, s.ticker
+            """,
+            (date_str, sig_type),
+        ).fetchall()
+        if not rows:
+            continue
+
+        st.markdown(f"**{section_label}**（{len(rows)} 件）")
+        records = []
+        for ticker, name, strategy, entry_date, eo, ec, ep in rows:
+            entry_d   = entry_date or date_str
+            buy_price = ep or eo or ec
+            rec = {
+                "kabutan_url": ticker_to_kabutan_url(ticker),
+                "銘柄名":      name or "-",
+                "戦略":        strategy_label(strategy),
+                "エントリー日": entry_d,
+                "価格":        fmt_price(buy_price) if buy_price else "未確定",
+            }
+            if sig_type == "buy" and buy_price:
+                n225_e = _n225_close_at(conn, entry_d)
+                for n in [3, 5, 10]:
+                    dn = nth_trading_day_after(conn, ticker, entry_d, n)
+                    ret_n = n225_ret_n = None
+                    if dn:
+                        pr = conn.execute(
+                            "SELECT close FROM prices_raw WHERE ticker=? AND date=?",
+                            (ticker, dn),
+                        ).fetchone()
+                        pn = pr[0] if pr else None
+                        ret_n = (pn - buy_price) / buy_price * 100 if pn else None
+                        n225_n = _n225_close_at(conn, dn)
+                        n225_ret_n = (n225_n - n225_e) / n225_e * 100 if (n225_e and n225_n) else None
+                    rec[f"{n}日後%"]    = ret_n
+                    rec[f"日経{n}日後%"] = n225_ret_n
+            records.append(rec)
+
+        st.dataframe(
+            pd.DataFrame(records),
+            use_container_width=True,
+            hide_index=True,
+            column_config=ret_col_cfg,
+        )
+
+
 def render_history_tab(conn):
-    st.subheader("📊 スクリーニング履歴 & パフォーマンス")
+    st.subheader("📊 スクリーニング履歴")
 
-    # 利用可能な年リスト
-    year_rows = conn.execute(
-        "SELECT DISTINCT strftime('%Y', date) AS y FROM signals "
-        "WHERE signal_type='buy' ORDER BY y DESC"
-    ).fetchall()
-    available_years = [int(r[0]) for r in year_rows] if year_rows else [datetime.now().year]
+    # ── 年月ナビゲーション ──────────────────────────────────────────────────────
+    today = datetime.now()
+    if "hist_year"  not in st.session_state:
+        st.session_state["hist_year"]  = today.year
+    if "hist_month" not in st.session_state:
+        st.session_state["hist_month"] = today.month
 
-    col1, col2, col3 = st.columns(3)
-    with col1:
-        sel_year = st.selectbox("年", available_years, index=0)
-    with col2:
-        month_opts = {"全月": 0, "1月": 1, "2月": 2, "3月": 3, "4月": 4,
-                      "5月": 5, "6月": 6, "7月": 7, "8月": 8,
-                      "9月": 9, "10月": 10, "11月": 11, "12月": 12}
-        sel_month_label = st.selectbox("月", list(month_opts.keys()))
-        sel_month = month_opts[sel_month_label]
-    with col3:
-        strategy_filter = st.selectbox("戦略", ["全て", "順張り", "逆張り"], key="hist_strategy")
+    c_prev, c_mid, c_next, c_filt = st.columns([1, 2, 1, 2])
+    with c_prev:
+        if st.button("◀ 前月", key="cal_prev"):
+            m, y = st.session_state["hist_month"] - 1, st.session_state["hist_year"]
+            if m < 1: m, y = 12, y - 1
+            st.session_state.update(hist_month=m, hist_year=y, hist_selected_date=None)
+            st.rerun()
+    with c_mid:
+        st.markdown(
+            f"<h3 style='text-align:center;margin:4px 0'>"
+            f"{st.session_state['hist_year']}年 {st.session_state['hist_month']}月</h3>",
+            unsafe_allow_html=True,
+        )
+    with c_next:
+        if st.button("翌月 ▶", key="cal_next"):
+            m, y = st.session_state["hist_month"] + 1, st.session_state["hist_year"]
+            if m > 12: m, y = 1, y + 1
+            st.session_state.update(hist_month=m, hist_year=y, hist_selected_date=None)
+            st.rerun()
+    with c_filt:
+        strat_filter = st.selectbox("戦略", ["全て", "順張り", "逆張り"], key="hist_strategy")
 
-    with st.spinner("パフォーマンス計算中..."):
-        perf_df = calc_performance(conn, sel_year, sel_month, strategy_filter)
+    year  = st.session_state["hist_year"]
+    month = st.session_state["hist_month"]
+    ym    = f"{year}-{month:02d}"
 
-    if perf_df.empty:
-        # signals テーブルに buy が全くないか、フィルタで絞り込んで0件か判断
+    # ── サマリー統計 ───────────────────────────────────────────────────────────
+    with st.spinner("集計中..."):
+        perf_df = calc_performance(conn, year, month, strat_filter)
+
+    if not perf_df.empty:
+        n_total = len(perf_df)
+        v5  = perf_df.dropna(subset=["_ret5"])
+        v3  = perf_df.dropna(subset=["_ret3"])
+        v10 = perf_df.dropna(subset=["_ret10"])
+        n5  = len(v5)
+        win_rate = len(v5[v5["_win"] == True]) / n5 * 100 if n5 > 0 else None
+        st.markdown(f"#### {year}年{month}月 通算成績")
+        m1, m2, m3, m4, m5c = st.columns(5)
+        with m1: st.metric("シグナル数", f"{n_total} 件")
+        with m2: st.metric("勝率 (5日後)", f"{win_rate:.1f}%" if win_rate is not None else "-")
+        for col, vn, n in [(m3, v3, 3), (m4, v5, 5), (m5c, v10, 10)]:
+            avg = vn[f"_ret{n}"].mean()   if len(vn) > 0 else None
+            med = vn[f"_ret{n}"].median() if len(vn) > 0 else None
+            with col:
+                st.metric(
+                    f"{n}日後 平均/中央",
+                    f"{fmt_pct(avg,1)} / {fmt_pct(med,1)}" if avg is not None else "-",
+                )
+    else:
         total_buy = conn.execute(
             "SELECT COUNT(*) FROM signals WHERE signal_type='buy'"
         ).fetchone()[0]
         if total_buy == 0:
             st.info("まだ買い推奨シグナルがありません。手動実行後に結果が表示されます。")
         else:
-            st.info(f"{sel_year}年{sel_month_label if sel_month != 0 else ''}に該当する買い推奨シグナルはありません。")
-        return
-
-    # ── サマリー ──────────────────────────────────────────────────────────────
-    valid = perf_df.dropna(subset=["_ret_raw"])
-    wins  = valid[valid["_win"] == True]
-    n_total  = len(perf_df)
-    n_calc   = len(valid)
-    n_win    = len(wins)
-    win_rate = n_win / n_calc * 100 if n_calc > 0 else 0
-    avg_ret  = valid["_ret_raw"].mean() if n_calc > 0 else None
-    med_ret  = valid["_ret_raw"].median() if n_calc > 0 else None
-    max_ret  = valid["_ret_raw"].max() if n_calc > 0 else None
-    min_ret  = valid["_ret_raw"].min() if n_calc > 0 else None
-
-    pos_sum = wins["_ret_raw"].sum() if len(wins) > 0 else 0
-    neg_sum = valid[valid["_win"] == False]["_ret_raw"].sum()
-    pf = abs(pos_sum / neg_sum) if neg_sum < 0 else None
-
-    period_label = f"{sel_year}年" + (f" {sel_month_label}" if sel_month != 0 else "")
-    st.markdown(f"#### {period_label} 通算成績")
-
-    m1, m2, m3, m4, m5, m6 = st.columns(6)
-    with m1:
-        st.metric("シグナル数", f"{n_total} 件")
-    with m2:
-        st.metric("勝率", f"{win_rate:.1f}%" if n_calc > 0 else "-")
-    with m3:
-        delta_color = "normal" if avg_ret and avg_ret >= 0 else "inverse"
-        st.metric("平均リターン", fmt_pct(avg_ret, 2) if avg_ret is not None else "-")
-    with m4:
-        st.metric("中央値リターン", fmt_pct(med_ret, 2) if med_ret is not None else "-")
-    with m5:
-        st.metric("最大利益", fmt_pct(max_ret, 2) if max_ret is not None else "-")
-    with m6:
-        st.metric("最大損失", fmt_pct(min_ret, 2) if min_ret is not None else "-")
-
-    if pf is not None:
-        st.caption(f"プロフィットファクター: {pf:.2f}  |  計算対象: {n_calc}/{n_total} 件（出口価格確認済み）")
-    else:
-        st.caption(f"計算対象: {n_calc}/{n_total} 件（出口価格確認済み）")
+            st.info(f"{year}年{month}月に該当する買い推奨シグナルはありません。")
 
     st.divider()
 
-    # ── シグナル一覧テーブル ───────────────────────────────────────────────────
-    st.markdown("#### シグナル一覧")
-    display_cols = [
-        "kabutan_url", "ティッカー", "銘柄名", "戦略", "シグナル日",
-        "エントリー日", "エントリー価格", "出口日", "出口価格", "リターン%",
-    ]
-    display_df = perf_df[display_cols].copy()
+    # ── カレンダーデータ準備 ───────────────────────────────────────────────────
+    ind_dates = set(r[0] for r in conn.execute(
+        "SELECT DISTINCT date FROM indicators WHERE strftime('%Y-%m',date)=?", (ym,)
+    ).fetchall())
 
-    # リターン列のスタイル用
-    def color_ret(val):
-        if val is None or pd.isna(val):
-            return ""
-        return "color: #d62728" if val < 0 else "color: #2ca02c"
+    sig_rows = conn.execute(
+        "SELECT date, signal_type, COUNT(*) FROM signals "
+        "WHERE strftime('%Y-%m',date)=? GROUP BY date, signal_type",
+        (ym,),
+    ).fetchall()
+    sigs: dict[str, dict] = {}
+    for d, stype, cnt in sig_rows:
+        if d not in sigs:
+            sigs[d] = {"buy": 0, "watch": 0}
+        sigs[d][stype] = cnt
 
-    styled = display_df.style.map(color_ret, subset=["リターン%"])
+    min_ind = conn.execute("SELECT MIN(date) FROM indicators").fetchone()[0] or ""
+    max_ind = conn.execute("SELECT MAX(date) FROM indicators").fetchone()[0] or ""
+    _, last_day = _cal.monthrange(year, month)
+    holidays: set[str] = set()
+    for day in range(1, last_day + 1):
+        dt = datetime(year, month, day)
+        ds = dt.strftime("%Y-%m-%d")
+        if dt.weekday() < 5 and min_ind <= ds <= max_ind and ds not in ind_dates:
+            holidays.add(ds)
 
-    st.dataframe(
-        display_df,
-        use_container_width=True,
-        hide_index=True,
-        column_config={
-            "kabutan_url": st.column_config.LinkColumn(
-                "株探",
-                display_text="株探↗",
-                help="株探の銘柄ページを開く",
-            ),
-            "リターン%": st.column_config.NumberColumn(
-                "リターン%",
-                format="%.2f%%",
-            ),
-        },
-    )
+    # ── カレンダー描画 ────────────────────────────────────────────────────────
+    st.markdown("""
+    <style>
+    div[data-testid="stButton"]>button {
+        font-size:0.7rem; padding:2px 2px; min-height:50px;
+        white-space:pre-wrap; line-height:1.3;
+    }
+    </style>""", unsafe_allow_html=True)
 
-    # ── リターン分布チャート ──────────────────────────────────────────────────
-    if n_calc > 0:
-        st.markdown("#### リターン分布")
-        fig = px.histogram(
-            valid, x="_ret_raw", nbins=30,
-            labels={"_ret_raw": "リターン(%)"},
-            color_discrete_sequence=["#1A3568"],
-        )
-        fig.add_vline(x=0, line_dash="dash", line_color="red", opacity=0.6)
-        fig.add_vline(x=avg_ret, line_dash="dot", line_color="#007A7C",
-                      annotation_text=f"平均 {avg_ret:.2f}%")
-        fig.update_layout(height=280, showlegend=False,
-                          xaxis_title="リターン(%)", yaxis_title="件数")
-        st.plotly_chart(fig, use_container_width=True)
+    col_w   = [0.7, 1.0, 1.0, 1.0, 1.0, 1.0, 0.7]
+    headers = ["日", "月", "火", "水", "木", "金", "土"]
+    h_colors = ["#cc0000","#333","#333","#333","#333","#333","#0066cc"]
+
+    hcols = st.columns(col_w)
+    for c, h, color in zip(hcols, headers, h_colors):
+        with c:
+            st.markdown(
+                f"<div style='text-align:center;font-weight:bold;color:{color};"
+                f"border-bottom:2px solid #ccc;padding:3px'>{h}</div>",
+                unsafe_allow_html=True,
+            )
+
+    sel = st.session_state.get("hist_selected_date")
+    month_cal = _cal.monthcalendar(year, month)  # [Mon..Sun] per week
+
+    for week in month_cal:
+        sun_first = [week[6]] + week[:6]          # → [Sun, Mon, ..., Sat]
+        wcols = st.columns(col_w)
+        for ci, (c, day) in enumerate(zip(wcols, sun_first)):
+            with c:
+                if day == 0:
+                    st.write(" ")
+                    continue
+                ds        = f"{year}-{month:02d}-{day:02d}"
+                day_color = h_colors[ci]
+                is_sel    = (ds == sel)
+                bg_sel    = "background:#ddeeff;border:2px solid #1A3568;" if is_sel else "border:1px solid #e0e0e0;"
+
+                if ds in sigs:
+                    b = sigs[ds].get("buy", 0)
+                    w = sigs[ds].get("watch", 0)
+                    if st.button(
+                        f"{day}日\n買{b} 監{w}",
+                        key=f"c_{ds}",
+                        use_container_width=True,
+                    ):
+                        st.session_state["hist_selected_date"] = ds
+                        st.rerun()
+                elif ds in holidays:
+                    st.markdown(
+                        f"<div style='text-align:center;{bg_sel}border-radius:4px;"
+                        f"padding:4px;font-size:0.75rem'>"
+                        f"<b style='color:{day_color}'>{day}</b>"
+                        f"<br><span style='color:#bbb'>休場</span></div>",
+                        unsafe_allow_html=True,
+                    )
+                elif ds in ind_dates:
+                    st.markdown(
+                        f"<div style='text-align:center;background:#f7f7f7;{bg_sel}"
+                        f"border-radius:4px;padding:4px;font-size:0.75rem'>"
+                        f"<b style='color:{day_color}'>{day}</b>"
+                        f"<br><span style='color:#bbb'>未実行</span></div>",
+                        unsafe_allow_html=True,
+                    )
+                else:
+                    st.markdown(
+                        f"<div style='text-align:center;padding:4px;"
+                        f"font-size:0.75rem;color:{day_color}'><b>{day}</b></div>",
+                        unsafe_allow_html=True,
+                    )
+
+    # ── 日付クリック時の詳細 ──────────────────────────────────────────────────
+    if sel and sel in sigs:
+        st.divider()
+        _render_day_detail(conn, sel)
+    elif sel and sel not in sigs:
+        st.session_state.pop("hist_selected_date", None)
 
 
 def render_settings_tab(conn):
