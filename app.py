@@ -408,10 +408,13 @@ def run_pipeline_manual(placeholder):
                 st.error(r1.stderr[-2000:] if r1.stderr else "不明なエラー")
                 return
 
-            # 最終ログ行を表示
-            last_lines = [l for l in r1.stdout.splitlines() if l.strip()][-5:]
-            for line in last_lines:
-                st.caption(line)
+            # 更新件数を含む重要行を強調表示、全ログはexpanderに
+            all_lines1 = [l for l in r1.stdout.splitlines() if l.strip()]
+            for line in all_lines1:
+                if "更新完了" in line or "新規データ" in line:
+                    st.info(line)
+            with st.expander("daily_update.py 詳細ログ"):
+                st.code(r1.stdout[-3000:] or "(出力なし)")
 
             st.write("**STEP 2/2** — スクリーニング条件を判定中 (screening.py)")
             r2 = subprocess.run(
@@ -425,9 +428,12 @@ def run_pipeline_manual(placeholder):
                 st.error(r2.stderr[-2000:] if r2.stderr else "不明なエラー")
                 return
 
-            last_lines2 = [l for l in r2.stdout.splitlines() if l.strip()][-5:]
-            for line in last_lines2:
-                st.caption(line)
+            all_lines2 = [l for l in r2.stdout.splitlines() if l.strip()]
+            for line in all_lines2:
+                if "スクリーニング対象日" in line or "buy 推奨" in line or "watch 生成" in line:
+                    st.info(line)
+            with st.expander("screening.py 詳細ログ"):
+                st.code(r2.stdout[-2000:] or "(出力なし)")
 
             # 通知
             try:

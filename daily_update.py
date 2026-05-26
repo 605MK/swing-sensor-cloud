@@ -57,10 +57,16 @@ def fetch_n225(start: str, end: str) -> pd.DataFrame:
         raw = yf.download("^N225", start=start, end=end, progress=False, auto_adjust=False)
         if raw.empty:
             return pd.DataFrame()
+        # MultiIndex の場合は price_type だけ残してフラット化（yfinance 新旧対応）
+        if isinstance(raw.columns, pd.MultiIndex):
+            raw.columns = raw.columns.get_level_values(0)
         raw = raw.reset_index()
-        raw.columns = [c[0] if isinstance(c, tuple) else c for c in raw.columns]
-        raw["date"]       = pd.to_datetime(raw["Date"]).dt.strftime("%Y-%m-%d")
-        raw["n225_close"] = raw["Close"].astype(float)
+        raw.columns = [str(c) for c in raw.columns]
+        date_col = next((c for c in raw.columns if c.lower() in ("date", "datetime")), None)
+        if date_col is None:
+            date_col = next((c for c in raw.columns if "date" in c.lower()), "Date")
+        raw["date"]       = pd.to_datetime(raw[date_col]).dt.strftime("%Y-%m-%d")
+        raw["n225_close"] = pd.to_numeric(raw["Close"], errors="coerce")
         raw["n225_chg"]   = raw["n225_close"].pct_change() * 100
         return raw[["date", "n225_close", "n225_chg"]].dropna()
     except Exception as e:
@@ -81,16 +87,26 @@ def _download_batch(batch: list[str], start: str, end: str) -> dict[str, pd.Data
 
     results: dict[str, pd.DataFrame] = {}
     if isinstance(raw.columns, pd.MultiIndex):
-        available = raw.columns.get_level_values(0).unique().tolist()
+        lv0 = raw.columns.get_level_values(0).unique().tolist()
+        lv1 = raw.columns.get_level_values(1).unique().tolist()
         for ticker in batch:
-            if ticker not in available:
+            try:
+                if ticker in lv0:
+                    # 旧形式 (yfinance <0.2.38): MultiIndex(ticker, price_type)
+                    df = raw[ticker].copy().dropna(how="all")
+                elif ticker in lv1:
+                    # 新形式 (yfinance >=0.2.38): MultiIndex(price_type, ticker)
+                    df = raw.xs(ticker, level=1, axis=1).copy().dropna(how="all")
+                else:
+                    continue
+                if df.empty:
+                    continue
+                df.columns = [c.lower().replace(" ", "_") for c in df.columns]
+                results[ticker] = df
+            except Exception:
                 continue
-            df = raw[ticker].copy().dropna(how="all")
-            if df.empty:
-                continue
-            df.columns = [c.lower().replace(" ", "_") for c in df.columns]
-            results[ticker] = df
     else:
+        # 単一銘柄で MultiIndex なし
         if len(batch) == 1:
             df = raw.copy().dropna(how="all")
             if not df.empty:
