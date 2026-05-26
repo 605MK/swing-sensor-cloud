@@ -561,25 +561,25 @@ def calc_performance(conn, year: int, month: int, strategy_filter: str) -> pd.Da
     for row in rows:
         d = dict(zip(cols, row))
         buy_price = d["entry_price"] or d["entry_open"] or d["entry_close"]
-        if not buy_price:
-            continue
+        # buy_price が取れなくてもシグナル自体は履歴に表示する（価格未確定として扱う）
 
-        holding = 5 if d["strategy"] == "trend" else 9
-        exit_date = nth_trading_day_after(conn, d["ticker"], d["entry_date"] or d["date"], holding)
-
+        exit_date = None
         exit_price = None
-        if exit_date:
-            res = conn.execute(
-                "SELECT close FROM prices_raw WHERE ticker=? AND date=?",
-                (d["ticker"], exit_date),
-            ).fetchone()
-            exit_price = res[0] if res else None
-
         ret = None
         win = None
-        if buy_price and exit_price:
-            ret = (exit_price - buy_price) / buy_price * 100
-            win = ret > 0
+
+        if buy_price:
+            holding = 5 if d["strategy"] == "trend" else 9
+            exit_date = nth_trading_day_after(conn, d["ticker"], d["entry_date"] or d["date"], holding)
+            if exit_date:
+                res = conn.execute(
+                    "SELECT close FROM prices_raw WHERE ticker=? AND date=?",
+                    (d["ticker"], exit_date),
+                ).fetchone()
+                exit_price = res[0] if res else None
+            if buy_price and exit_price:
+                ret = (exit_price - buy_price) / buy_price * 100
+                win = ret > 0
 
         records.append({
             "シグナル日":     d["date"],
@@ -588,9 +588,9 @@ def calc_performance(conn, year: int, month: int, strategy_filter: str) -> pd.Da
             "銘柄名":         d["name"] or "-",
             "戦略":           strategy_label(d["strategy"]),
             "エントリー日":   d["entry_date"] or "-",
-            "エントリー価格": fmt_price(buy_price),
+            "エントリー価格": fmt_price(buy_price) if buy_price else "未確定",
             "出口日":         exit_date or "-",
-            "出口価格":       fmt_price(exit_price),
+            "出口価格":       fmt_price(exit_price) if exit_price else "-",
             "リターン%":      round(ret, 2) if ret is not None else None,
             "_win":           win,
             "_ret_raw":       ret,
@@ -802,7 +802,14 @@ def render_history_tab(conn):
         perf_df = calc_performance(conn, sel_year, sel_month, strategy_filter)
 
     if perf_df.empty:
-        st.info("該当期間の買い推奨シグナルがありません。")
+        # signals テーブルに buy が全くないか、フィルタで絞り込んで0件か判断
+        total_buy = conn.execute(
+            "SELECT COUNT(*) FROM signals WHERE signal_type='buy'"
+        ).fetchone()[0]
+        if total_buy == 0:
+            st.info("まだ買い推奨シグナルがありません。手動実行後に結果が表示されます。")
+        else:
+            st.info(f"{sel_year}年{sel_month_label if sel_month != 0 else ''}に該当する買い推奨シグナルはありません。")
         return
 
     # ── サマリー ──────────────────────────────────────────────────────────────
