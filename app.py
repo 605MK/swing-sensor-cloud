@@ -204,12 +204,8 @@ def _push_db_to_github() -> tuple[bool | None, str]:
             timeout=600, env=env,
         )
         output = (r.stdout + r.stderr).strip()
-        if r.returncode == 0:
-            subprocess.run(
-                [sys.executable, str(BASE_DIR / "push_db.py"), "--timestamp"],
-                capture_output=True, text=True, cwd=str(BASE_DIR),
-                timeout=30, env=env,
-            )
+        # --timestamp は main ブランチを更新するため Streamlit Cloud の不要な
+        # 再デプロイを引き起こす。/tmp/ が消えてデータが失われるので呼ばない。
         return (r.returncode == 0), output
     except Exception as e:
         return False, str(e)
@@ -1049,6 +1045,15 @@ def render_settings_tab(conn):
 # ── メイン ────────────────────────────────────────────────────────────────────
 
 def main():
+    # DB が存在しない場合は GitHub から自動ダウンロードを試みる
+    # （Streamlit Cloud の /tmp/ リセット後や初回アクセス時に対応）
+    if not DB_PATH.exists() and _gh_secret("GITHUB_REPO"):
+        with st.spinner("データベースを GitHub から自動取得中..."):
+            auto_ok = _download_db_from_github()
+        if auto_ok:
+            st.cache_resource.clear()
+            st.rerun()
+
     conn = get_conn()
 
     if conn is None:
