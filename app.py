@@ -408,14 +408,6 @@ def run_pipeline_manual(placeholder):
                 st.error(r1.stderr[-2000:] if r1.stderr else "不明なエラー")
                 return
 
-            # 更新件数を含む重要行を強調表示、全ログはexpanderに
-            all_lines1 = [l for l in r1.stdout.splitlines() if l.strip()]
-            for line in all_lines1:
-                if "更新完了" in line or "新規データ" in line:
-                    st.info(line)
-            with st.expander("daily_update.py 詳細ログ"):
-                st.code(r1.stdout[-3000:] or "(出力なし)")
-
             st.write("**STEP 2/2** — スクリーニング条件を判定中 (screening.py)")
             r2 = subprocess.run(
                 [sys.executable, str(BASE_DIR / "screening.py")],
@@ -428,12 +420,18 @@ def run_pipeline_manual(placeholder):
                 st.error(r2.stderr[-2000:] if r2.stderr else "不明なエラー")
                 return
 
-            all_lines2 = [l for l in r2.stdout.splitlines() if l.strip()]
-            for line in all_lines2:
-                if "スクリーニング対象日" in line or "buy 推奨" in line or "watch 生成" in line:
-                    st.info(line)
-            with st.expander("screening.py 詳細ログ"):
-                st.code(r2.stdout[-2000:] or "(出力なし)")
+            # ログをsession_stateに保存 → rerun後も表示できるようにする
+            key_lines1 = [l for l in r1.stdout.splitlines()
+                          if l.strip() and ("更新完了" in l or "新規データ" in l)]
+            key_lines2 = [l for l in r2.stdout.splitlines()
+                          if l.strip() and ("スクリーニング対象日" in l
+                                            or "buy 推奨" in l or "watch 生成" in l)]
+            st.session_state["_pipeline_log"] = {
+                "key1": key_lines1,
+                "key2": key_lines2,
+                "full1": r1.stdout[-3000:],
+                "full2": r2.stdout[-2000:],
+            }
 
             # 通知
             try:
@@ -1081,7 +1079,7 @@ def main():
         apply_schedule(cfg)
         st.session_state["scheduler_initialized"] = True
 
-    # パイプライン完了後の結果メッセージを表示
+    # パイプライン完了後の結果メッセージ＋ログを表示
     if "_pipeline_msg" in st.session_state:
         msg_type, msg_text = st.session_state.pop("_pipeline_msg")
         if msg_type == "success":
@@ -1092,6 +1090,16 @@ def main():
             push_log = st.session_state.pop("_pipeline_push_log")
             with st.expander("GitHub保存エラー詳細"):
                 st.code(push_log)
+        if "_pipeline_log" in st.session_state:
+            log_data = st.session_state.pop("_pipeline_log")
+            for line in log_data.get("key1", []):
+                st.info(line)
+            for line in log_data.get("key2", []):
+                st.info(line)
+            with st.expander("daily_update.py 詳細ログ"):
+                st.code(log_data.get("full1") or "(出力なし)")
+            with st.expander("screening.py 詳細ログ"):
+                st.code(log_data.get("full2") or "(出力なし)")
 
     render_header(conn)
     st.divider()
