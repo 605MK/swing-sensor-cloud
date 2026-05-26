@@ -33,11 +33,16 @@ def _resolve_db_path() -> Path:
 DB_PATH     = Path(os.environ["SCREENING_DB_PATH"]) if os.environ.get("SCREENING_DB_PATH") else _resolve_db_path()
 CONFIG_PATH = Path(__file__).parent / "config.json"
 
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s %(levelname)s %(message)s",
-    datefmt="%H:%M:%S",
-)
+class _JSTFormatter(logging.Formatter):
+    _JST = __import__("datetime").timezone(__import__("datetime").timedelta(hours=9))
+    def formatTime(self, record, datefmt=None):
+        from datetime import datetime
+        dt = datetime.fromtimestamp(record.created, tz=self._JST)
+        return dt.strftime(datefmt or "%H:%M:%S")
+
+_handler = logging.StreamHandler()
+_handler.setFormatter(_JSTFormatter("%(asctime)s %(levelname)s %(message)s", datefmt="%H:%M:%S"))
+logging.basicConfig(handlers=[_handler], level=logging.INFO)
 log = logging.getLogger(__name__)
 
 # ── デフォルト閾値 ────────────────────────────────────────────────────────────

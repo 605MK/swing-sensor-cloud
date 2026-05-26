@@ -39,11 +39,16 @@ BATCH_SIZE = 100
 SLEEP_SEC  = 1.5
 LOOKBACK_DAYS = 110  # 指標計算用にDBから取得する過去日数（MA75確保のため）
 
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s %(levelname)s %(message)s",
-    datefmt="%H:%M:%S",
-)
+class _JSTFormatter(logging.Formatter):
+    _JST = __import__("datetime").timezone(__import__("datetime").timedelta(hours=9))
+    def formatTime(self, record, datefmt=None):
+        from datetime import datetime
+        dt = datetime.fromtimestamp(record.created, tz=self._JST)
+        return dt.strftime(datefmt or "%H:%M:%S")
+
+_handler = logging.StreamHandler()
+_handler.setFormatter(_JSTFormatter("%(asctime)s %(levelname)s %(message)s", datefmt="%H:%M:%S"))
+logging.basicConfig(handlers=[_handler], level=logging.INFO)
 log = logging.getLogger(__name__)
 
 
