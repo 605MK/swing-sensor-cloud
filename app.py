@@ -857,7 +857,7 @@ def render_history_tab(conn):
             return ""
         return "color: #d62728" if val < 0 else "color: #2ca02c"
 
-    styled = display_df.style.applymap(color_ret, subset=["リターン%"])
+    styled = display_df.style.map(color_ret, subset=["リターン%"])
 
     st.dataframe(
         display_df,
