@@ -662,11 +662,10 @@ def _show_signal_df(df: pd.DataFrame, strategy_filter: str, key_suffix: str) -> 
 def render_buy_tab(conn):
     st.subheader("📋 本日の買い推奨（翌営業日 寄付きエントリー）")
 
-    latest_date = conn.execute(
-        "SELECT MAX(date) FROM signals WHERE signal_type='buy'"
-    ).fetchone()[0]
+    # 最新スクリーニング日 = indicators の最終日（buyゼロ日でも正しく取得）
+    latest_date = conn.execute("SELECT MAX(date) FROM indicators").fetchone()[0]
     if not latest_date:
-        st.info("買い推奨シグナルがありません。「手動実行」ボタンでスクリーニングを実行してください。")
+        st.info("データがありません。「手動実行」ボタンでスクリーニングを実行してください。")
         return
 
     col_f1, col_f2 = st.columns([1, 3])
@@ -689,7 +688,7 @@ def render_buy_tab(conn):
     ).fetchall()
 
     if not rows:
-        st.info(f"{latest_date} の買い推奨はありません。")
+        st.info(f"{latest_date} の買い推奨はありません（Day1 条件を満たした銘柄なし）。")
         return
 
     records = []
