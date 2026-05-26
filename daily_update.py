@@ -74,28 +74,51 @@ def fetch_n225(start: str, end: str) -> pd.DataFrame:
         return pd.DataFrame()
 
 
-def _download_batch(batch: list[str], start: str, end: str) -> dict[str, pd.DataFrame]:
+def _download_batch(batch: list[str], start: str, end: str,
+                    batch_num: int = 0) -> dict[str, pd.DataFrame]:
     if not batch:
         return {}
+
+    # group_by="ticker" は新バージョンで挙動が不安定なため使わない
     raw = yf.download(
         batch, start=start, end=end,
         progress=False, auto_adjust=False,
-        group_by="ticker",
     )
+
+    # ── 診断ログ（最初のバッチのみ詳細出力）─────────────────────────────────
+    if batch_num == 1:
+        is_mi = isinstance(raw.columns, pd.MultiIndex)
+        log.info(f"  [診断] raw.empty={raw.empty}, shape={raw.shape}, "
+                 f"MultiIndex={is_mi}")
+        if not raw.empty:
+            if is_mi:
+                lv0s = raw.columns.get_level_values(0).unique().tolist()[:5]
+                lv1s = raw.columns.get_level_values(1).unique().tolist()[:5]
+                log.info(f"  [診断] lv0(先頭5)={lv0s}")
+                log.info(f"  [診断] lv1(先頭5)={lv1s}")
+            else:
+                log.info(f"  [診断] columns(先頭5)={list(raw.columns)[:5]}")
+            log.info(f"  [診断] index.name={raw.index.name}, "
+                     f"index[:3]={raw.index[:3].tolist()}")
+
     if raw.empty:
+        log.warning(f"  [空] バッチ{batch_num}: yfinanceが空を返却 "
+                    f"(start={start}, end={end}, ticker例={batch[0]})")
         return {}
 
     results: dict[str, pd.DataFrame] = {}
+
     if isinstance(raw.columns, pd.MultiIndex):
         lv0 = raw.columns.get_level_values(0).unique().tolist()
         lv1 = raw.columns.get_level_values(1).unique().tolist()
+
         for ticker in batch:
             try:
                 if ticker in lv0:
-                    # 旧形式 (yfinance <0.2.38): MultiIndex(ticker, price_type)
+                    # 旧形式: MultiIndex(ticker, price_type)
                     df = raw[ticker].copy().dropna(how="all")
                 elif ticker in lv1:
-                    # 新形式 (yfinance >=0.2.38): MultiIndex(price_type, ticker)
+                    # 新形式: MultiIndex(price_type, ticker)
                     df = raw.xs(ticker, level=1, axis=1).copy().dropna(how="all")
                 else:
                     continue
@@ -103,15 +126,21 @@ def _download_batch(batch: list[str], start: str, end: str) -> dict[str, pd.Data
                     continue
                 df.columns = [c.lower().replace(" ", "_") for c in df.columns]
                 results[ticker] = df
-            except Exception:
+            except Exception as e:
+                log.debug(f"  {ticker} 抽出失敗: {e}")
                 continue
+
+        if not results and batch_num == 1:
+            log.warning(f"  [マッチなし] lv0={lv0[:5]}, lv1={lv1[:5]}, "
+                        f"batch[0]={batch[0]}")
     else:
-        # 単一銘柄で MultiIndex なし
+        # MultiIndex なし（単一銘柄 or 旧バージョン）
         if len(batch) == 1:
             df = raw.copy().dropna(how="all")
             if not df.empty:
                 df.columns = [c.lower().replace(" ", "_") for c in df.columns]
                 results[batch[0]] = df
+
     return results
 
 
@@ -240,11 +269,14 @@ def main() -> None:
         log.info(f"バッチ {bn}/{bn_total} ({len(batch)} 銘柄)...")
 
         try:
-            batch_data = _download_batch(batch, start, end)
+            batch_data = _download_batch(batch, start, end, batch_num=bn)
         except Exception as e:
             log.warning(f"バッチ {bn} 失敗: {e}")
             time.sleep(SLEEP_SEC)
             continue
+
+        if not batch_data:
+            log.warning(f"バッチ {bn}: データ取得0件")
 
         for ticker, raw_df in batch_data.items():
             try:
