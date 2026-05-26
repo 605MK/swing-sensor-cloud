@@ -864,6 +864,82 @@ def _render_day_detail(conn, date_str: str) -> None:
         )
 
 
+def _perf_metrics_block(df: pd.DataFrame, label: str) -> None:
+    """通算成績メトリクスを1ブロック分表示する"""
+    if df.empty:
+        st.caption(f"{label}：シグナルなし")
+        return
+    n_total = len(df)
+    v5  = df.dropna(subset=["_ret5"])
+    v3  = df.dropna(subset=["_ret3"])
+    v10 = df.dropna(subset=["_ret10"])
+    n5  = len(v5)
+    win_rate = len(v5[v5["_win"] == True]) / n5 * 100 if n5 > 0 else None
+    st.markdown(f"**{label}**")
+    c1, c2, c3, c4, c5 = st.columns(5)
+    with c1: st.metric("シグナル数", f"{n_total} 件")
+    with c2: st.metric("勝率(5日後)", f"{win_rate:.1f}%" if win_rate is not None else "-")
+    for col, vn, n in [(c3, v3, 3), (c4, v5, 5), (c5, v10, 10)]:
+        avg = vn[f"_ret{n}"].mean()   if len(vn) > 0 else None
+        med = vn[f"_ret{n}"].median() if len(vn) > 0 else None
+        with col:
+            st.metric(
+                f"{n}日後 平均/中央",
+                f"{fmt_pct(avg,1)} / {fmt_pct(med,1)}" if avg is not None else "-",
+            )
+
+
+def _signal_list_expander(conn, year: int, month: int,
+                           strat_filter: str, label: str) -> None:
+    """期間内の全シグナル（buy＋watch）を折りたたみ表示する"""
+    strat_sql = ""
+    if strat_filter == "順張り":
+        strat_sql = "AND s.strategy='trend'"
+    elif strat_filter == "逆張り":
+        strat_sql = "AND s.strategy='contra'"
+
+    date_cond = (
+        f"strftime('%Y',s.date)='{year}'" if month == 0
+        else f"strftime('%Y-%m',s.date)='{year}-{month:02d}'"
+    )
+
+    rows = conn.execute(
+        f"""
+        SELECT s.date, s.ticker, w.name, s.strategy, s.signal_type,
+               s.entry_date, p.close
+        FROM signals s
+        LEFT JOIN watchlist w ON w.ticker = s.ticker
+        LEFT JOIN prices_raw p ON p.ticker = s.ticker AND p.date = s.date
+        WHERE {date_cond} {strat_sql}
+        ORDER BY s.date DESC, s.signal_type DESC, s.strategy, s.ticker
+        """,
+    ).fetchall()
+
+    with st.expander(f"📋 {label} シグナル一覧（{len(rows)} 件）"):
+        if not rows:
+            st.info("該当するシグナルはありません。")
+            return
+        records = []
+        for date, ticker, name, strategy, stype, entry_date, close in rows:
+            records.append({
+                "kabutan_url":  ticker_to_kabutan_url(ticker),
+                "銘柄名":       name or "-",
+                "戦略":         strategy_label(strategy),
+                "種別":         "買い推奨" if stype == "buy" else "監視",
+                "シグナル日":   date,
+                "エントリー日": entry_date or "-",
+                "終値(参考)":   fmt_price(close),
+            })
+        st.dataframe(
+            pd.DataFrame(records),
+            use_container_width=True,
+            hide_index=True,
+            column_config={
+                "kabutan_url": st.column_config.LinkColumn("株探", display_text="↗")
+            },
+        )
+
+
 def render_history_tab(conn):
     st.subheader("📊 スクリーニング履歴")
 
@@ -900,37 +976,26 @@ def render_history_tab(conn):
     month = st.session_state["hist_month"]
     ym    = f"{year}-{month:02d}"
 
-    # ── サマリー統計 ───────────────────────────────────────────────────────────
+    # ── 通算成績（月間 ＋ 年間）────────────────────────────────────────────────
     with st.spinner("集計中..."):
-        perf_df = calc_performance(conn, year, month, strat_filter)
+        monthly_df = calc_performance(conn, year, month, strat_filter)
+        yearly_df  = calc_performance(conn, year, 0,     strat_filter)
 
-    if not perf_df.empty:
-        n_total = len(perf_df)
-        v5  = perf_df.dropna(subset=["_ret5"])
-        v3  = perf_df.dropna(subset=["_ret3"])
-        v10 = perf_df.dropna(subset=["_ret10"])
-        n5  = len(v5)
-        win_rate = len(v5[v5["_win"] == True]) / n5 * 100 if n5 > 0 else None
-        st.markdown(f"#### {year}年{month}月 通算成績")
-        m1, m2, m3, m4, m5c = st.columns(5)
-        with m1: st.metric("シグナル数", f"{n_total} 件")
-        with m2: st.metric("勝率 (5日後)", f"{win_rate:.1f}%" if win_rate is not None else "-")
-        for col, vn, n in [(m3, v3, 3), (m4, v5, 5), (m5c, v10, 10)]:
-            avg = vn[f"_ret{n}"].mean()   if len(vn) > 0 else None
-            med = vn[f"_ret{n}"].median() if len(vn) > 0 else None
-            with col:
-                st.metric(
-                    f"{n}日後 平均/中央",
-                    f"{fmt_pct(avg,1)} / {fmt_pct(med,1)}" if avg is not None else "-",
-                )
-    else:
-        total_buy = conn.execute(
-            "SELECT COUNT(*) FROM signals WHERE signal_type='buy'"
-        ).fetchone()[0]
-        if total_buy == 0:
+    has_any_buy = conn.execute(
+        "SELECT COUNT(*) FROM signals WHERE signal_type='buy'"
+    ).fetchone()[0]
+
+    st.markdown("#### 通算成績")
+    col_m, col_y = st.columns(2)
+    with col_m:
+        if not monthly_df.empty:
+            _perf_metrics_block(monthly_df, f"{year}年{month}月（月間）")
+        elif has_any_buy == 0:
             st.info("まだ買い推奨シグナルがありません。手動実行後に結果が表示されます。")
         else:
-            st.info(f"{year}年{month}月に該当する買い推奨シグナルはありません。")
+            st.caption(f"{year}年{month}月：シグナルなし")
+    with col_y:
+        _perf_metrics_block(yearly_df, f"{year}年（年間）")
 
     st.divider()
 
@@ -939,9 +1004,16 @@ def render_history_tab(conn):
         "SELECT DISTINCT date FROM indicators WHERE strftime('%Y-%m',date)=?", (ym,)
     ).fetchall())
 
+    # 戦略フィルタをカレンダー件数にも反映
+    strat_sql_cal = ""
+    if strat_filter == "順張り":
+        strat_sql_cal = "AND strategy='trend'"
+    elif strat_filter == "逆張り":
+        strat_sql_cal = "AND strategy='contra'"
+
     sig_rows = conn.execute(
-        "SELECT date, signal_type, COUNT(*) FROM signals "
-        "WHERE strftime('%Y-%m',date)=? GROUP BY date, signal_type",
+        f"SELECT date, signal_type, COUNT(*) FROM signals "
+        f"WHERE strftime('%Y-%m',date)=? {strat_sql_cal} GROUP BY date, signal_type",
         (ym,),
     ).fetchall()
     sigs: dict[str, dict] = {}
@@ -969,8 +1041,8 @@ def render_history_tab(conn):
     }
     </style>""", unsafe_allow_html=True)
 
-    col_w   = [0.7, 1.0, 1.0, 1.0, 1.0, 1.0, 0.7]
-    headers = ["日", "月", "火", "水", "木", "金", "土"]
+    col_w    = [0.7, 1.0, 1.0, 1.0, 1.0, 1.0, 0.7]
+    headers  = ["日", "月", "火", "水", "木", "金", "土"]
     h_colors = ["#cc0000","#333","#333","#333","#333","#333","#0066cc"]
 
     hcols = st.columns(col_w)
@@ -983,10 +1055,10 @@ def render_history_tab(conn):
             )
 
     sel = st.session_state.get("hist_selected_date")
-    month_cal = _cal.monthcalendar(year, month)  # [Mon..Sun] per week
+    month_cal = _cal.monthcalendar(year, month)
 
     for week in month_cal:
-        sun_first = [week[6]] + week[:6]          # → [Sun, Mon, ..., Sat]
+        sun_first = [week[6]] + week[:6]
         wcols = st.columns(col_w)
         for ci, (c, day) in enumerate(zip(wcols, sun_first)):
             with c:
@@ -995,17 +1067,13 @@ def render_history_tab(conn):
                     continue
                 ds        = f"{year}-{month:02d}-{day:02d}"
                 day_color = h_colors[ci]
-                is_sel    = (ds == sel)
-                bg_sel    = "background:#ddeeff;border:2px solid #1A3568;" if is_sel else "border:1px solid #e0e0e0;"
+                bg_sel    = "background:#ddeeff;border:2px solid #1A3568;" if ds == sel else "border:1px solid #e0e0e0;"
 
                 if ds in sigs:
                     b = sigs[ds].get("buy", 0)
                     w = sigs[ds].get("watch", 0)
-                    if st.button(
-                        f"{day}日\n買{b} 監{w}",
-                        key=f"c_{ds}",
-                        use_container_width=True,
-                    ):
+                    if st.button(f"{day}日\n買{b} 監{w}", key=f"c_{ds}",
+                                 use_container_width=True):
                         st.session_state["hist_selected_date"] = ds
                         st.rerun()
                 elif ds in holidays:
@@ -1037,6 +1105,13 @@ def render_history_tab(conn):
         _render_day_detail(conn, sel)
     elif sel and sel not in sigs:
         st.session_state.pop("hist_selected_date", None)
+
+    # ── 期間別シグナル一覧 ────────────────────────────────────────────────────
+    st.divider()
+    _signal_list_expander(conn, year, month, strat_filter,
+                          f"{year}年{month}月")
+    _signal_list_expander(conn, year, 0, strat_filter,
+                          f"{year}年（年間）")
 
 
 def render_settings_tab(conn):
