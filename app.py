@@ -865,33 +865,39 @@ def _render_day_detail(conn, date_str: str) -> None:
 
 
 def _perf_metrics_block(df: pd.DataFrame, label: str) -> None:
-    """通算成績メトリクスを1ブロック分表示する"""
+    """通算成績メトリクスを1ブロック分表示する（コンパクト版）"""
     if df.empty:
         st.caption(f"{label}：シグナルなし")
         return
-    n_total = len(df)
-    v5  = df.dropna(subset=["_ret5"])
-    v3  = df.dropna(subset=["_ret3"])
-    v10 = df.dropna(subset=["_ret10"])
-    n5  = len(v5)
+    n_total  = len(df)
+    v5       = df.dropna(subset=["_ret5"])
+    n5       = len(v5)
     win_rate = len(v5[v5["_win"] == True]) / n5 * 100 if n5 > 0 else None
+
     st.markdown(f"**{label}**")
-    c1, c2, c3, c4, c5 = st.columns(5)
+    c1, c2 = st.columns(2)
     with c1: st.metric("シグナル数", f"{n_total} 件")
     with c2: st.metric("勝率(5日後)", f"{win_rate:.1f}%" if win_rate is not None else "-")
-    for col, vn, n in [(c3, v3, 3), (c4, v5, 5), (c5, v10, 10)]:
+
+    tbl = []
+    for n in [3, 5, 10]:
+        vn  = df.dropna(subset=[f"_ret{n}"])
         avg = vn[f"_ret{n}"].mean()   if len(vn) > 0 else None
         med = vn[f"_ret{n}"].median() if len(vn) > 0 else None
-        with col:
-            st.metric(
-                f"{n}日後 平均/中央",
-                f"{fmt_pct(avg,1)} / {fmt_pct(med,1)}" if avg is not None else "-",
-            )
+        tbl.append({
+            "期間":  f"{n}日後",
+            "平均":  fmt_pct(avg, 1) if avg is not None else "-",
+            "中央値": fmt_pct(med, 1) if med is not None else "-",
+            "件数":  len(vn),
+        })
+    st.dataframe(pd.DataFrame(tbl), hide_index=True, use_container_width=True)
 
 
 def _signal_list_expander(conn, year: int, month: int,
-                           strat_filter: str, label: str) -> None:
-    """期間内の全シグナル（buy＋watch）を折りたたみ表示する"""
+                           strat_filter: str, label: str,
+                           buy_df: pd.DataFrame | None = None) -> None:
+    """期間内の全シグナルを折りたたみ表示する。
+    buy_df は calc_performance の結果（渡すと再計算を省略）。"""
     strat_sql = ""
     if strat_filter == "順張り":
         strat_sql = "AND s.strategy='trend'"
@@ -903,41 +909,76 @@ def _signal_list_expander(conn, year: int, month: int,
         else f"strftime('%Y-%m',s.date)='{year}-{month:02d}'"
     )
 
-    rows = conn.execute(
+    # watchシグナルのみ別途取得
+    watch_rows = conn.execute(
         f"""
-        SELECT s.date, s.ticker, w.name, s.strategy, s.signal_type,
-               s.entry_date, p.close
+        SELECT s.date, s.ticker, w.name, s.strategy, s.entry_date, p.close
         FROM signals s
         LEFT JOIN watchlist w ON w.ticker = s.ticker
         LEFT JOIN prices_raw p ON p.ticker = s.ticker AND p.date = s.date
-        WHERE {date_cond} {strat_sql}
-        ORDER BY s.date DESC, s.signal_type DESC, s.strategy, s.ticker
+        WHERE {date_cond} {strat_sql} AND s.signal_type='watch'
+        ORDER BY s.date DESC, s.strategy, s.ticker
         """,
     ).fetchall()
 
-    with st.expander(f"📋 {label} シグナル一覧（{len(rows)} 件）"):
-        if not rows:
+    if buy_df is None:
+        buy_df = calc_performance(conn, year, month, strat_filter)
+
+    total = len(buy_df) + len(watch_rows)
+
+    ret_col_cfg = {
+        "kabutan_url":  st.column_config.LinkColumn("株探", display_text="↗"),
+        "3日後%":       st.column_config.NumberColumn("3日後%",    format="%.2f%%"),
+        "日経3日後%":   st.column_config.NumberColumn("日経3日後%", format="%.2f%%"),
+        "5日後%":       st.column_config.NumberColumn("5日後%",    format="%.2f%%"),
+        "日経5日後%":   st.column_config.NumberColumn("日経5日後%", format="%.2f%%"),
+        "10日後%":      st.column_config.NumberColumn("10日後%",   format="%.2f%%"),
+        "日経10日後%":  st.column_config.NumberColumn("日経10日後%",format="%.2f%%"),
+    }
+
+    with st.expander(f"📋 {label} シグナル一覧（{total} 件）"):
+        if total == 0:
             st.info("該当するシグナルはありません。")
             return
-        records = []
-        for date, ticker, name, strategy, stype, entry_date, close in rows:
-            records.append({
-                "kabutan_url":  ticker_to_kabutan_url(ticker),
-                "銘柄名":       name or "-",
-                "戦略":         strategy_label(strategy),
-                "種別":         "買い推奨" if stype == "buy" else "監視",
-                "シグナル日":   date,
-                "エントリー日": entry_date or "-",
-                "終値(参考)":   fmt_price(close),
-            })
-        st.dataframe(
-            pd.DataFrame(records),
-            use_container_width=True,
-            hide_index=True,
-            column_config={
-                "kabutan_url": st.column_config.LinkColumn("株探", display_text="↗")
-            },
-        )
+
+        # ── 買い推奨（リターン付き）──────────────────────────────────────────
+        if not buy_df.empty:
+            st.markdown(f"**買い推奨**（{len(buy_df)} 件）")
+            buy_cols = [
+                "kabutan_url", "銘柄名", "戦略", "シグナル日",
+                "エントリー日", "エントリー価格",
+                "3日後%", "日経3日後%",
+                "5日後%", "日経5日後%",
+                "10日後%", "日経10日後%",
+            ]
+            st.dataframe(
+                buy_df[buy_cols],
+                use_container_width=True,
+                hide_index=True,
+                column_config=ret_col_cfg,
+            )
+
+        # ── 監視（基本情報のみ）─────────────────────────────────────────────
+        if watch_rows:
+            st.markdown(f"**監視**（{len(watch_rows)} 件）")
+            watch_records = []
+            for date, ticker, name, strategy, entry_date, close in watch_rows:
+                watch_records.append({
+                    "kabutan_url":  ticker_to_kabutan_url(ticker),
+                    "銘柄名":       name or "-",
+                    "戦略":         strategy_label(strategy),
+                    "シグナル日":   date,
+                    "Day1確認日":   entry_date or "-",
+                    "終値(参考)":   fmt_price(close),
+                })
+            st.dataframe(
+                pd.DataFrame(watch_records),
+                use_container_width=True,
+                hide_index=True,
+                column_config={
+                    "kabutan_url": st.column_config.LinkColumn("株探", display_text="↗")
+                },
+            )
 
 
 def render_history_tab(conn):
@@ -1106,12 +1147,12 @@ def render_history_tab(conn):
     elif sel and sel not in sigs:
         st.session_state.pop("hist_selected_date", None)
 
-    # ── 期間別シグナル一覧 ────────────────────────────────────────────────────
+    # ── 期間別シグナル一覧（buy_df を再利用して再計算を省略）─────────────────
     st.divider()
     _signal_list_expander(conn, year, month, strat_filter,
-                          f"{year}年{month}月")
+                          f"{year}年{month}月", buy_df=monthly_df)
     _signal_list_expander(conn, year, 0, strat_filter,
-                          f"{year}年（年間）")
+                          f"{year}年（年間）",  buy_df=yearly_df)
 
 
 def render_settings_tab(conn):
