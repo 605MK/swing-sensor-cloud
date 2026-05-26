@@ -152,11 +152,19 @@ def check_contra_day1(r1: dict) -> bool:
 
 # ── メイン処理 ────────────────────────────────────────────────────────────────
 
-def get_latest_dates(conn: sqlite3.Connection) -> list[str]:
-    rows = conn.execute(
-        "SELECT DISTINCT date FROM indicators ORDER BY date DESC LIMIT 2"
-    ).fetchall()
-    return [r[0] for r in rows]
+def get_dates_to_screen(conn: sqlite3.Connection) -> tuple[list[str], str | None]:
+    """未スクリーニング日リスト（昇順）と、Day1コンテキスト用の前回最終日を返す。"""
+    last_screened = conn.execute("SELECT MAX(date) FROM signals").fetchone()[0]
+    if last_screened:
+        rows = conn.execute(
+            "SELECT DISTINCT date FROM indicators WHERE date > ? ORDER BY date ASC",
+            (last_screened,),
+        ).fetchall()
+    else:
+        rows = conn.execute(
+            "SELECT DISTINCT date FROM indicators ORDER BY date ASC"
+        ).fetchall()
+    return [r[0] for r in rows], last_screened
 
 
 def load_indicators_for_date(conn: sqlite3.Connection, date: str) -> dict[str, dict]:
@@ -223,111 +231,122 @@ def load_watch_signals(conn: sqlite3.Connection, date: str) -> list[dict]:
 
 
 def run_screening(conn: sqlite3.Connection) -> dict:
-    """スクリーニングを実行し、生成件数を返す"""
+    """未スクリーニング日を全て処理し、生成件数を返す（バックフィル対応）"""
     thresholds = load_thresholds()
     th_t0 = thresholds["trend_day0"]
     th_t1 = thresholds["trend_day1"]
     th_c0 = thresholds["contra_day0"]
 
-    dates = get_latest_dates(conn)
-    if not dates:
-        log.error("indicators テーブルにデータがありません。daily_update.py を先に実行してください。")
-        return {}
+    dates_to_process, last_screened = get_dates_to_screen(conn)
 
-    today = dates[0]
-    prev  = dates[1] if len(dates) > 1 else None
+    if not dates_to_process:
+        log.info("新しいスクリーニング対象日はありません。")
+        return {"watch_trend": 0, "watch_contra": 0,
+                "buy_trend": 0, "buy_contra": 0, "date": last_screened or ""}
 
-    log.info(f"スクリーニング対象日: {today}  前日: {prev}")
+    total_watch_trend = total_watch_contra = total_buy_trend = total_buy_contra = 0
 
-    today_data = load_indicators_for_date(conn, today)
-    prev_data  = load_indicators_for_date(conn, prev) if prev else {}
+    for i, today in enumerate(dates_to_process):
+        # prevは同ループの前日 or 前回実行の最終日
+        prev = dates_to_process[i - 1] if i > 0 else last_screened
 
-    watch_trend = watch_contra = buy_trend = buy_contra = 0
+        log.info(f"スクリーニング対象日: {today}  前日: {prev or 'なし'}")
 
-    # Day0 チェック
-    for ticker, r in today_data.items():
-        r_prev = prev_data.get(ticker)
+        today_data = load_indicators_for_date(conn, today)
+        prev_data  = load_indicators_for_date(conn, prev) if prev else {}
 
-        if check_trend_day0(r, r_prev, th_t0):
-            notes = {
-                "body_pct":      round(r["body_pct"], 2),
-                "upper_shadow":  round(r["upper_shadow"], 2),
-                "lower_shadow":  round(r["lower_shadow"], 2),
-                "volume_ratio25":round(r["volume_ratio25"], 2),
-                "kairi25":       round(r["kairi25"], 2),
-                "rsi14":         round(r["rsi14"], 2),
-                "macd_hist":     round(r["macd_hist"], 4),
-                "close":         round(r["close"], 0),
-            }
-            insert_signal(conn, ticker, today, "trend", "watch",
-                          next_business_day(today), notes)
-            watch_trend += 1
+        watch_trend = watch_contra = 0
 
-        if check_contra_day0(r, r_prev, th_c0):
-            notes = {
-                "kairi25":        round(r["kairi25"], 2),
-                "rsi14":          round(r["rsi14"], 2),
-                "lower_shadow":   round(r["lower_shadow"], 2),
-                "volume_ratio25": round(r["volume_ratio25"], 2),
-                "macd_hist":      round(r["macd_hist"], 4),
-                "n225_chg":       round(r["n225_chg"], 2) if not pd.isna(r["n225_chg"]) else None,
-                "close":          round(r["close"], 0),
-            }
-            insert_signal(conn, ticker, today, "contra", "watch",
-                          next_business_day(today), notes)
-            watch_contra += 1
+        # Day0 チェック
+        for ticker, r in today_data.items():
+            r_prev = prev_data.get(ticker)
 
-    conn.commit()
-    log.info(f"Day0 watch 生成: 順張り {watch_trend} / 逆張り {watch_contra}")
+            if check_trend_day0(r, r_prev, th_t0):
+                notes = {
+                    "body_pct":      round(r["body_pct"], 2),
+                    "upper_shadow":  round(r["upper_shadow"], 2),
+                    "lower_shadow":  round(r["lower_shadow"], 2),
+                    "volume_ratio25":round(r["volume_ratio25"], 2),
+                    "kairi25":       round(r["kairi25"], 2),
+                    "rsi14":         round(r["rsi14"], 2),
+                    "macd_hist":     round(r["macd_hist"], 4),
+                    "close":         round(r["close"], 0),
+                }
+                insert_signal(conn, ticker, today, "trend", "watch",
+                              next_business_day(today), notes)
+                watch_trend += 1
 
-    # Day1 チェック
-    if prev is None:
-        log.info("前日データなし。Day1 チェックをスキップ。")
-        return {"watch_trend": watch_trend, "watch_contra": watch_contra,
-                "buy_trend": 0, "buy_contra": 0, "date": today}
+            if check_contra_day0(r, r_prev, th_c0):
+                notes = {
+                    "kairi25":        round(r["kairi25"], 2),
+                    "rsi14":          round(r["rsi14"], 2),
+                    "lower_shadow":   round(r["lower_shadow"], 2),
+                    "volume_ratio25": round(r["volume_ratio25"], 2),
+                    "macd_hist":      round(r["macd_hist"], 4),
+                    "n225_chg":       round(r["n225_chg"], 2) if not pd.isna(r["n225_chg"]) else None,
+                    "close":          round(r["close"], 0),
+                }
+                insert_signal(conn, ticker, today, "contra", "watch",
+                              next_business_day(today), notes)
+                watch_contra += 1
 
-    prev_watches = load_watch_signals(conn, prev)
+        conn.commit()
+        log.info(f"Day0 watch 生成: 順張り {watch_trend} / 逆張り {watch_contra}")
 
-    for w in prev_watches:
-        ticker   = w["ticker"]
-        strategy = w["strategy"]
-        r1       = today_data.get(ticker)
-        if r1 is None:
-            continue
+        buy_trend = buy_contra = 0
 
-        prev_prices = conn.execute(
-            "SELECT low FROM prices_raw WHERE ticker=? AND date=?", (ticker, prev)
-        ).fetchone()
-        r0_low = prev_prices[0] if prev_prices else None
+        # Day1 チェック
+        if prev is None:
+            log.info("前日データなし。Day1 チェックをスキップ。")
+        else:
+            prev_watches = load_watch_signals(conn, prev)
+            for w in prev_watches:
+                ticker   = w["ticker"]
+                strategy = w["strategy"]
+                r1       = today_data.get(ticker)
+                if r1 is None:
+                    continue
 
-        promoted = False
-        if strategy == "trend" and r0_low is not None:
-            promoted = check_trend_day1(r1, r0_low, th_t1)
-        elif strategy == "contra":
-            promoted = check_contra_day1(r1)
+                prev_prices = conn.execute(
+                    "SELECT low FROM prices_raw WHERE ticker=? AND date=?", (ticker, prev)
+                ).fetchone()
+                r0_low = prev_prices[0] if prev_prices else None
 
-        if promoted:
-            entry_date = next_business_day(today)
-            notes = {
-                "day1_body_pct":      round(r1["body_pct"], 2),
-                "day1_upper_shadow":  round(r1["upper_shadow"], 2),
-                "day1_volume_ratio25":round(r1["volume_ratio25"], 2),
-                "day1_close":         round(r1["close"], 0),
-                "day0_notes":         w["notes"],
-            }
-            insert_signal(conn, ticker, today, strategy, "buy", entry_date, notes)
-            if strategy == "trend":
-                buy_trend += 1
-            else:
-                buy_contra += 1
+                promoted = False
+                if strategy == "trend" and r0_low is not None:
+                    promoted = check_trend_day1(r1, r0_low, th_t1)
+                elif strategy == "contra":
+                    promoted = check_contra_day1(r1)
 
-    conn.commit()
-    log.info(f"Day1 buy 昇格: 順張り {buy_trend} / 逆張り {buy_contra}")
-    log.info(f"本日の buy 推奨合計: {buy_trend + buy_contra} 件")
+                if promoted:
+                    entry_date = next_business_day(today)
+                    notes = {
+                        "day1_body_pct":      round(r1["body_pct"], 2),
+                        "day1_upper_shadow":  round(r1["upper_shadow"], 2),
+                        "day1_volume_ratio25":round(r1["volume_ratio25"], 2),
+                        "day1_close":         round(r1["close"], 0),
+                        "day0_notes":         w["notes"],
+                    }
+                    insert_signal(conn, ticker, today, strategy, "buy", entry_date, notes)
+                    if strategy == "trend":
+                        buy_trend += 1
+                    else:
+                        buy_contra += 1
+
+            conn.commit()
+            log.info(f"Day1 buy 昇格: 順張り {buy_trend} / 逆張り {buy_contra}")
+
+        total_watch_trend  += watch_trend
+        total_watch_contra += watch_contra
+        total_buy_trend    += buy_trend
+        total_buy_contra   += buy_contra
+
+    latest_date = dates_to_process[-1]
+    log.info(f"本日の buy 推奨合計: {total_buy_trend + total_buy_contra} 件")
 
     return {
-        "watch_trend": watch_trend, "watch_contra": watch_contra,
-        "buy_trend": buy_trend, "buy_contra": buy_contra, "date": today,
+        "watch_trend": total_watch_trend, "watch_contra": total_watch_contra,
+        "buy_trend": total_buy_trend, "buy_contra": total_buy_contra, "date": latest_date,
     }
 
 
