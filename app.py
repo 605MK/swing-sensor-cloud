@@ -420,17 +420,19 @@ def run_pipeline_manual(placeholder):
                 st.error(r2.stderr[-2000:] if r2.stderr else "不明なエラー")
                 return
 
-            # ログをsession_stateに保存 → rerun後も表示できるようにする
-            key_lines1 = [l for l in r1.stdout.splitlines()
+            # logging はデフォルトで stderr に出力されるため stdout+stderr を結合
+            out1 = (r1.stdout + r1.stderr).strip()
+            out2 = (r2.stdout + r2.stderr).strip()
+            key_lines1 = [l for l in out1.splitlines()
                           if l.strip() and ("更新完了" in l or "新規データ" in l)]
-            key_lines2 = [l for l in r2.stdout.splitlines()
+            key_lines2 = [l for l in out2.splitlines()
                           if l.strip() and ("スクリーニング対象日" in l
                                             or "buy 推奨" in l or "watch 生成" in l)]
             st.session_state["_pipeline_log"] = {
                 "key1": key_lines1,
                 "key2": key_lines2,
-                "full1": r1.stdout[-3000:],
-                "full2": r2.stdout[-2000:],
+                "full1": out1[-3000:],
+                "full2": out2[-2000:],
             }
 
             # 通知
