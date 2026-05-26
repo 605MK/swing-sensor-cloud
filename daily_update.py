@@ -62,9 +62,9 @@ def fetch_n225(start: str, end: str) -> pd.DataFrame:
             raw.columns = raw.columns.get_level_values(0)
         raw = raw.reset_index()
         raw.columns = [str(c) for c in raw.columns]
-        date_col = next((c for c in raw.columns if c.lower() in ("date", "datetime")), None)
+        date_col = next((c for c in raw.columns if str(c).lower() in ("date", "datetime")), None)
         if date_col is None:
-            date_col = next((c for c in raw.columns if "date" in c.lower()), "Date")
+            date_col = next((c for c in raw.columns if "date" in str(c).lower()), raw.columns[0])
         raw["date"]       = pd.to_datetime(raw[date_col]).dt.strftime("%Y-%m-%d")
         raw["n225_close"] = pd.to_numeric(raw["Close"], errors="coerce")
         raw["n225_chg"]   = raw["n225_close"].pct_change() * 100
@@ -169,7 +169,10 @@ def process_ticker(
     """
     # 新規価格の整形
     new_df = new_df.reset_index()
-    date_col = next(c for c in new_df.columns if "date" in c.lower())
+    date_col = next(
+        (c for c in new_df.columns if "date" in str(c).lower()),
+        new_df.columns[0],  # index.name=None の場合、reset_index で "index" 列になるためフォールバック
+    )
     new_df["date"]   = pd.to_datetime(new_df[date_col]).dt.strftime("%Y-%m-%d")
     new_df["ticker"] = ticker
 
@@ -285,7 +288,7 @@ def main() -> None:
                     total_new += added
                     total_ok  += 1
             except Exception as e:
-                log.debug(f"{ticker} 処理失敗: {e}")
+                log.warning(f"{ticker} 処理失敗: {e}")
 
         conn.commit()
         time.sleep(SLEEP_SEC)
