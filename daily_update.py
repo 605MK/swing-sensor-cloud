@@ -79,6 +79,43 @@ def fetch_n225(start: str, end: str) -> pd.DataFrame:
         return pd.DataFrame()
 
 
+def backfill_n225(conn: sqlite3.Connection) -> None:
+    """n225_close が NULL の indicators 行を後から補完する。
+    指数(^N225)が個別銘柄より遅れて配信される日や、取得に失敗した日に対応。
+    process_ticker は新規日付しか書かないため、一度NULLで入った日は
+    この処理がないと永久に補完されない。"""
+    null_dates = [r[0] for r in conn.execute(
+        "SELECT DISTINCT date FROM indicators WHERE n225_close IS NULL ORDER BY date"
+    ).fetchall()]
+    if not null_dates:
+        return
+
+    log.info(f"日経データ補完対象: {len(null_dates)} 日 (最古 {null_dates[0]})")
+    # pct_change のため最古NULL日より前から取得する
+    start = (datetime.strptime(null_dates[0], "%Y-%m-%d")
+             - timedelta(days=10)).strftime("%Y-%m-%d")
+    end   = (datetime.now() + timedelta(days=1)).strftime("%Y-%m-%d")
+    n225 = fetch_n225(start, end)
+    if n225.empty:
+        log.warning("日経補完: ^N225 取得失敗のためスキップ")
+        return
+
+    n225_map = {row["date"]: (row["n225_close"], row["n225_chg"])
+                for _, row in n225.iterrows()}
+    filled = 0
+    for d in null_dates:
+        if d in n225_map:
+            close, chg = n225_map[d]
+            cur = conn.execute(
+                "UPDATE indicators SET n225_close=?, n225_chg=? "
+                "WHERE date=? AND n225_close IS NULL",
+                (float(close), float(chg), d),
+            )
+            filled += cur.rowcount
+    conn.commit()
+    log.info(f"日経データ補完: {filled} 行を更新（未配信の最新日は次回以降に補完）")
+
+
 def _download_batch(batch: list[str], start: str, end: str,
                     batch_num: int = 0) -> dict[str, pd.DataFrame]:
     if not batch:
@@ -299,6 +336,10 @@ def main() -> None:
         time.sleep(SLEEP_SEC)
 
     log.info(f"更新完了: {total_ok} 銘柄 / {total_new} 件の新規データを追加")
+
+    # 日経データが未配信/取得失敗で NULL になった過去日を補完
+    log.info("日経データの欠損補完中...")
+    backfill_n225(conn)
 
     # 古いデータを削除して DB サイズを安定化
     log.info("古いデータをプルーニング中...")

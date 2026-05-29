@@ -302,7 +302,8 @@ def nth_trading_day_after(conn, ticker: str, from_date: str, n: int) -> str | No
 def _n225_close_at(conn, date: str) -> float | None:
     """指定日の日経平均終値を indicators から取得する"""
     row = conn.execute(
-        "SELECT n225_close FROM indicators WHERE date=? LIMIT 1", (date,)
+        "SELECT n225_close FROM indicators "
+        "WHERE date=? AND n225_close IS NOT NULL LIMIT 1", (date,)
     ).fetchone()
     return row[0] if row else None
 
