@@ -92,6 +92,10 @@ CREATE TABLE IF NOT EXISTS signals (
     created_at   TEXT    DEFAULT (datetime('now', 'localtime'))
 );
 
+CREATE TABLE IF NOT EXISTS screened_dates (
+    date  TEXT PRIMARY KEY
+);
+
 CREATE INDEX IF NOT EXISTS idx_prices_ticker_date
     ON prices_raw(ticker, date DESC);
 CREATE INDEX IF NOT EXISTS idx_indicators_ticker_date

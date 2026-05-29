@@ -1065,6 +1065,14 @@ def render_history_tab(conn):
             sigs[d] = {"buy": 0, "watch": 0}
         sigs[d][stype] = cnt
 
+    # スクリーニング済み日（シグナル0件でも記録される）。未実行との区別に使う
+    try:
+        screened = set(r[0] for r in conn.execute(
+            "SELECT date FROM screened_dates WHERE strftime('%Y-%m',date)=?", (ym,)
+        ).fetchall())
+    except sqlite3.OperationalError:
+        screened = set()
+
     min_ind = conn.execute("SELECT MIN(date) FROM indicators").fetchone()[0] or ""
     max_ind = conn.execute("SELECT MAX(date) FROM indicators").fetchone()[0] or ""
     _, last_day = _cal.monthrange(year, month)
@@ -1125,6 +1133,14 @@ def render_history_tab(conn):
                         f"padding:4px;font-size:0.75rem'>"
                         f"<b style='color:{day_color}'>{day}</b>"
                         f"<br><span style='color:#bbb'>休場</span></div>",
+                        unsafe_allow_html=True,
+                    )
+                elif ds in screened:
+                    st.markdown(
+                        f"<div style='text-align:center;{bg_sel}"
+                        f"border-radius:4px;padding:4px;font-size:0.75rem'>"
+                        f"<b style='color:{day_color}'>{day}</b>"
+                        f"<br><span style='color:#bbb'>0件</span></div>",
                         unsafe_allow_html=True,
                     )
                 elif ds in ind_dates:

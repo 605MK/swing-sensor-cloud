@@ -152,25 +152,46 @@ def check_contra_day1(r1: dict) -> bool:
 
 # ── メイン処理 ────────────────────────────────────────────────────────────────
 
+def ensure_screened_dates_table(conn: sqlite3.Connection) -> None:
+    """screened_dates テーブルを用意し、既存DBを一度だけマイグレーションする。
+
+    旧仕様では「signals に行がない日」を未処理と判定していたが、シグナル0件の
+    日は signals に行が残らないため、毎回最古の0件日から再スクリーニングされて
+    いた。スクリーニング済み日を独立に記録することでこれを解消する。"""
+    conn.execute("CREATE TABLE IF NOT EXISTS screened_dates (date TEXT PRIMARY KEY)")
+    # 空＝初回マイグレーション。既存シグナルの最終日までは処理済みとみなす
+    # （バックフィルは常に最古ギャップ→最新を連続処理するため、この仮定は成立する）
+    already = conn.execute("SELECT COUNT(*) FROM screened_dates").fetchone()[0]
+    if already == 0:
+        max_sig = conn.execute("SELECT MAX(date) FROM signals").fetchone()[0]
+        if max_sig:
+            conn.execute(
+                "INSERT OR IGNORE INTO screened_dates (date) "
+                "SELECT DISTINCT date FROM indicators WHERE date <= ?",
+                (max_sig,),
+            )
+            conn.commit()
+
+
 def get_dates_to_screen(conn: sqlite3.Connection) -> tuple[list[str], str | None]:
     """未スクリーニング日を含む処理対象日付リストを返す。
-    indicators に存在するが signals にない日があれば、その最古日から
+    indicators に存在するが screened_dates にない日があれば、その最古日から
     最新 indicators 日まで全て処理（INSERT OR IGNORE で重複は安全に無視）。"""
-    # indicators にあるが signals にない最古の日付を探す
+    # indicators にあるが screened_dates にない最古の日付を探す
     first_gap_row = conn.execute("""
         SELECT MIN(i.date) FROM
         (SELECT DISTINCT date FROM indicators) i
-        LEFT JOIN (SELECT DISTINCT date FROM signals) s ON s.date = i.date
+        LEFT JOIN screened_dates s ON s.date = i.date
         WHERE s.date IS NULL
     """).fetchone()
     first_gap = first_gap_row[0] if first_gap_row and first_gap_row[0] else None
 
     if not first_gap:
-        return [], conn.execute("SELECT MAX(date) FROM signals").fetchone()[0]
+        return [], conn.execute("SELECT MAX(date) FROM screened_dates").fetchone()[0]
 
-    # first_gap より前の最新シグナル日（Day1 コンテキスト用）
+    # first_gap より前の最新スクリーニング済み日（Day1 コンテキスト用）
     last_before = conn.execute(
-        "SELECT MAX(date) FROM signals WHERE date < ?", (first_gap,)
+        "SELECT MAX(date) FROM screened_dates WHERE date < ?", (first_gap,)
     ).fetchone()[0]
 
     # first_gap 以降の全 indicators 日（処理済みも含む: Day1 再チェックのため）
@@ -251,6 +272,7 @@ def run_screening(conn: sqlite3.Connection) -> dict:
     th_t1 = thresholds["trend_day1"]
     th_c0 = thresholds["contra_day0"]
 
+    ensure_screened_dates_table(conn)
     dates_to_process, last_screened = get_dates_to_screen(conn)
 
     if not dates_to_process:
@@ -349,6 +371,12 @@ def run_screening(conn: sqlite3.Connection) -> dict:
 
             conn.commit()
             log.info(f"Day1 buy 昇格: 順張り {buy_trend} / 逆張り {buy_contra}")
+
+        # この日はシグナル0件でも「スクリーニング済み」として記録する
+        conn.execute(
+            "INSERT OR IGNORE INTO screened_dates (date) VALUES (?)", (today,)
+        )
+        conn.commit()
 
         total_watch_trend  += watch_trend
         total_watch_contra += watch_contra
