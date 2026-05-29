@@ -28,9 +28,11 @@ def main() -> None:
         sys.exit(0)
 
     conn = sqlite3.connect(DB_PATH)
+    # 最新スクリーニング日を基準にする（アプリの買い推奨タブと同じ）。
+    # MAX(buy date) だと買い0件の日が飛ばされ過去日の内容を誤送信するため使わない。
     today = (
         conn.execute(
-            "SELECT MAX(date) FROM signals WHERE signal_type='buy'"
+            "SELECT MAX(date) FROM indicators"
         ).fetchone()[0] or ""
     )
 
