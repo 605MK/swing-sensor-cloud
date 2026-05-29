@@ -214,13 +214,15 @@ def _push_db_to_github() -> tuple[bool | None, str]:
 
 # ── DB 接続 ───────────────────────────────────────────────────────────────────
 
-@st.cache_resource
 def get_conn():
     """DB接続を返す。DBがなければNoneを返す（ダウンロードは main() で行う）"""
     if not DB_PATH.exists():
         return None
     try:
-        return sqlite3.connect(str(DB_PATH), check_same_thread=False)
+        conn = sqlite3.connect(str(DB_PATH), check_same_thread=False)
+        # 接続の健全性チェック（スリープ後の壊れた接続を早期検出）
+        conn.execute("SELECT 1 FROM sqlite_master LIMIT 1").fetchone()
+        return conn
     except Exception as e:
         log.error(f"sqlite3.connect failed: {e}")
         return None
@@ -1310,13 +1312,13 @@ def render_settings_tab(conn):
 # ── メイン ────────────────────────────────────────────────────────────────────
 
 def main():
-    # DB が存在しない場合は GitHub から自動ダウンロードを試みる
+    # DB が存在しない、または接続できない場合は GitHub から自動ダウンロードを試みる
     # （Streamlit Cloud の /tmp/ リセット後や初回アクセス時に対応）
-    if not DB_PATH.exists() and _gh_secret("GITHUB_REPO"):
+    need_download = not DB_PATH.exists() or get_conn() is None
+    if need_download and _gh_secret("GITHUB_REPO"):
         with st.spinner("データベースを GitHub から自動取得中..."):
             auto_ok = _download_db_from_github()
         if auto_ok:
-            st.cache_resource.clear()
             st.rerun()
 
     conn = get_conn()
