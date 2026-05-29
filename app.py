@@ -307,6 +307,46 @@ def _n225_close_at(conn, date: str) -> float | None:
     return row[0] if row else None
 
 
+_RET_COLS = ["3日後%", "日経3日後%", "5日後%", "日経5日後%", "10日後%", "日経10日後%"]
+
+
+def _returns_after(conn, ticker: str, base_date: str,
+                   base_price: float | None) -> dict:
+    """base_date / base_price を起点に 3/5/10 営業日後のリターンと日経比較を計算。
+    {"3日後%":float|None, "日経3日後%":float|None, ...} を返す。
+    買い: base=エントリー日・エントリー価格。監視: base=シグナル日・当日終値。"""
+    n225_base = _n225_close_at(conn, base_date)
+    out: dict = {}
+    for n in (3, 5, 10):
+        ret_n = n225_ret = None
+        if base_price:
+            dn = nth_trading_day_after(conn, ticker, base_date, n)
+            if dn:
+                pr = conn.execute(
+                    "SELECT close FROM prices_raw WHERE ticker=? AND date=?",
+                    (ticker, dn),
+                ).fetchone()
+                pn = pr[0] if pr else None
+                if pn:
+                    ret_n = (pn - base_price) / base_price * 100
+                n225_n = _n225_close_at(conn, dn)
+                if n225_base and n225_n:
+                    n225_ret = (n225_n - n225_base) / n225_base * 100
+        out[f"{n}日後%"]    = ret_n
+        out[f"日経{n}日後%"] = n225_ret
+    return out
+
+
+def _fmt_ret_df(df: pd.DataFrame) -> pd.DataFrame:
+    """リターン列（None含む）を '-' 付き文字列へ整形したコピーを返す。
+    NumberColumn が None を 'None' と表示する問題を回避する。"""
+    df = df.copy()
+    for col in _RET_COLS:
+        if col in df.columns:
+            df[col] = df[col].apply(lambda v: fmt_pct(v, 2))
+    return df
+
+
 # ── スケジューラ ──────────────────────────────────────────────────────────────
 
 @st.cache_resource
@@ -801,25 +841,20 @@ def _render_day_detail(conn, date_str: str) -> None:
     """カレンダーで選択した日のシグナル詳細を表示する"""
     st.markdown(f"#### 📋 {date_str} のシグナル詳細")
 
-    ret_col_cfg = {
-        "kabutan_url": st.column_config.LinkColumn("株探", display_text="↗"),
-        "3日後%":   st.column_config.NumberColumn("3日後%",  format="%.2f%%"),
-        "5日後%":   st.column_config.NumberColumn("5日後%",  format="%.2f%%"),
-        "10日後%":  st.column_config.NumberColumn("10日後%", format="%.2f%%"),
-        "日経3日後%":  st.column_config.NumberColumn("日経3日後%",  format="%.2f%%"),
-        "日経5日後%":  st.column_config.NumberColumn("日経5日後%",  format="%.2f%%"),
-        "日経10日後%": st.column_config.NumberColumn("日経10日後%", format="%.2f%%"),
-    }
+    link_cfg = {"kabutan_url": st.column_config.LinkColumn("株探", display_text="↗")}
 
     for sig_type, section_label in [("buy", "買い推奨"), ("watch", "監視")]:
         rows = conn.execute(
             """
             SELECT s.ticker, w.name, s.strategy, s.entry_date,
-                   p_e.open AS eo, p_e.close AS ec, s.entry_price
+                   p_e.open AS eo, p_e.close AS ec, s.entry_price,
+                   p_s.close AS sc
             FROM signals s
             LEFT JOIN watchlist w ON w.ticker = s.ticker
             LEFT JOIN prices_raw p_e
                    ON p_e.ticker = s.ticker AND p_e.date = s.entry_date
+            LEFT JOIN prices_raw p_s
+                   ON p_s.ticker = s.ticker AND p_s.date = s.date
             WHERE s.date=? AND s.signal_type=?
             ORDER BY s.strategy, s.ticker
             """,
@@ -830,39 +865,36 @@ def _render_day_detail(conn, date_str: str) -> None:
 
         st.markdown(f"**{section_label}**（{len(rows)} 件）")
         records = []
-        for ticker, name, strategy, entry_date, eo, ec, ep in rows:
+        for ticker, name, strategy, entry_date, eo, ec, ep, sc in rows:
             entry_d   = entry_date or date_str
-            buy_price = ep or eo or ec
-            rec = {
-                "kabutan_url": ticker_to_kabutan_url(ticker),
-                "銘柄名":      name or "-",
-                "戦略":        strategy_label(strategy),
-                "エントリー日": entry_d,
-                "価格":        fmt_price(buy_price) if buy_price else "未確定",
-            }
-            if sig_type == "buy" and buy_price:
-                n225_e = _n225_close_at(conn, entry_d)
-                for n in [3, 5, 10]:
-                    dn = nth_trading_day_after(conn, ticker, entry_d, n)
-                    ret_n = n225_ret_n = None
-                    if dn:
-                        pr = conn.execute(
-                            "SELECT close FROM prices_raw WHERE ticker=? AND date=?",
-                            (ticker, dn),
-                        ).fetchone()
-                        pn = pr[0] if pr else None
-                        ret_n = (pn - buy_price) / buy_price * 100 if pn else None
-                        n225_n = _n225_close_at(conn, dn)
-                        n225_ret_n = (n225_n - n225_e) / n225_e * 100 if (n225_e and n225_n) else None
-                    rec[f"{n}日後%"]    = ret_n
-                    rec[f"日経{n}日後%"] = n225_ret_n
+            if sig_type == "buy":
+                # 買い: エントリー日・エントリー価格を起点
+                buy_price = ep or eo or ec
+                rec = {
+                    "kabutan_url": ticker_to_kabutan_url(ticker),
+                    "銘柄名":      name or "-",
+                    "戦略":        strategy_label(strategy),
+                    "エントリー日": entry_d,
+                    "価格":        fmt_price(buy_price) if buy_price else "未確定",
+                }
+                rec.update(_returns_after(conn, ticker, entry_d, buy_price))
+            else:
+                # 監視: シグナル日(Day0)・当日終値を起点
+                rec = {
+                    "kabutan_url": ticker_to_kabutan_url(ticker),
+                    "銘柄名":      name or "-",
+                    "戦略":        strategy_label(strategy),
+                    "Day1確認日":  entry_d,
+                    "終値(参考)":  fmt_price(sc),
+                }
+                rec.update(_returns_after(conn, ticker, date_str, sc))
             records.append(rec)
 
         st.dataframe(
-            pd.DataFrame(records),
+            _fmt_ret_df(pd.DataFrame(records)),
             use_container_width=True,
             hide_index=True,
-            column_config=ret_col_cfg,
+            column_config=link_cfg,
         )
 
 
@@ -928,15 +960,7 @@ def _signal_list_expander(conn, year: int, month: int,
 
     total = len(buy_df) + len(watch_rows)
 
-    ret_col_cfg = {
-        "kabutan_url":  st.column_config.LinkColumn("株探", display_text="↗"),
-        "3日後%":       st.column_config.NumberColumn("3日後%",    format="%.2f%%"),
-        "日経3日後%":   st.column_config.NumberColumn("日経3日後%", format="%.2f%%"),
-        "5日後%":       st.column_config.NumberColumn("5日後%",    format="%.2f%%"),
-        "日経5日後%":   st.column_config.NumberColumn("日経5日後%", format="%.2f%%"),
-        "10日後%":      st.column_config.NumberColumn("10日後%",   format="%.2f%%"),
-        "日経10日後%":  st.column_config.NumberColumn("日経10日後%",format="%.2f%%"),
-    }
+    link_cfg = {"kabutan_url": st.column_config.LinkColumn("株探", display_text="↗")}
 
     with st.expander(f"📋 {label} シグナル一覧（{total} 件）"):
         if total == 0:
@@ -954,32 +978,32 @@ def _signal_list_expander(conn, year: int, month: int,
                 "10日後%", "日経10日後%",
             ]
             st.dataframe(
-                buy_df[buy_cols],
+                _fmt_ret_df(buy_df[buy_cols]),
                 use_container_width=True,
                 hide_index=True,
-                column_config=ret_col_cfg,
+                column_config=link_cfg,
             )
 
-        # ── 監視（基本情報のみ）─────────────────────────────────────────────
+        # ── 監視（シグナル日終値を起点としたリターン付き）─────────────────────
         if watch_rows:
             st.markdown(f"**監視**（{len(watch_rows)} 件）")
             watch_records = []
             for date, ticker, name, strategy, entry_date, close in watch_rows:
-                watch_records.append({
+                rec = {
                     "kabutan_url":  ticker_to_kabutan_url(ticker),
                     "銘柄名":       name or "-",
                     "戦略":         strategy_label(strategy),
                     "シグナル日":   date,
                     "Day1確認日":   entry_date or "-",
                     "終値(参考)":   fmt_price(close),
-                })
+                }
+                rec.update(_returns_after(conn, ticker, date, close))
+                watch_records.append(rec)
             st.dataframe(
-                pd.DataFrame(watch_records),
+                _fmt_ret_df(pd.DataFrame(watch_records)),
                 use_container_width=True,
                 hide_index=True,
-                column_config={
-                    "kabutan_url": st.column_config.LinkColumn("株探", display_text="↗")
-                },
+                column_config=link_cfg,
             )
 
 
